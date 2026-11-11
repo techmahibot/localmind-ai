@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+.env
+.env.*
+
+# Node
+node_modules/
+dist/
+npm-debug.log*
+
+# AI models
+models/
+*.gguf
+*.safetensors
+*.bin
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
