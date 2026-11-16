@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from grammer import improve_text
 from pypdf import PdfReader
 
 from summarizer import summarize_document
@@ -49,6 +50,9 @@ class ChatRequest(BaseModel):
     # every LAN user gets their own separate conversation.
     history: List[HistoryMessage] = []
 
+class GrammarRequest(BaseModel):
+    text: str
+    task: str = "grammar"
 
 class SummarizeRequest(BaseModel):
     text: str = Field(min_length=1)
@@ -212,6 +216,14 @@ async def summarize_file(
     text = extract_text(file.filename or "", data)
     result = await call_ollama_errors(summarize_document(text, length))
     return {**result, "filename": file.filename, "characters": len(text)}
+
+
+@app.post("/api/improve-text")
+async def improve(request: GrammarRequest):
+    improved = await call_ollama_errors(
+        improve_text(request.text, request.task)
+    )
+    return {"improved_text": improved}
 
 
 # Serve the built React app (frontend/dist) at "/". Must come after the API routes.
