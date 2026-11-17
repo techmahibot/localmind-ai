@@ -1,8 +1,5 @@
 
-import httpx
-
-OLLAMA_URL = "http://127.0.0.1:11434/api/chat"
-MODEL_NAME = "qwen2.5:3b"
+from llm import ask
 
 
 async def improve_text(text: str, task: str = "grammar"):
@@ -38,9 +35,8 @@ async def improve_text(text: str, task: str = "grammar"):
             "Invalid task. Choose grammar, formal, simple, concise, or reformat."
         )
 
-    payload = {
-        "model": MODEL_NAME,
-        "messages": [
+    return await ask(
+        [
             {
                 "role": "system",
                 "content": (
@@ -54,14 +50,5 @@ async def improve_text(text: str, task: str = "grammar"):
                 "role": "user",
                 "content": f"{instruction}\n\nText:\n{text}"
             }
-        ],
-        "stream": False
-    }
-
-    async with httpx.AsyncClient(timeout=180.0) as client:
-        response = await client.post(OLLAMA_URL, json=payload)
-        response.raise_for_status()
-
-        result = response.json()
-
-    return result["message"]["content"]
+        ]
+    )

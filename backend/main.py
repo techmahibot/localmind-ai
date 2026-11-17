@@ -1,5 +1,4 @@
 import io
-import json
 import os
 import hmac
 import hashlib
@@ -18,9 +17,8 @@ from grammer import improve_text
 from pypdf import PdfReader
 
 from summarizer import summarize_document
+from llm import ModelConfigurationError, ask, model_name, open_stream, reachable, stream_content
 
-OLLAMA_URL = "http://127.0.0.1:11434/api/chat"
-MODEL_NAME = "qwen2.5:3b"
 MAX_HISTORY_MESSAGES = 20  # keep the prompt small so a 3B model stays fast
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB
 SESSION_SECONDS = 12 * 60 * 60
@@ -54,7 +52,8 @@ class LoginRequest(BaseModel):
 
 def valid_session(token: Optional[str]) -> bool:
     password = os.environ.get("LOCALMIND_PASSWORD", "")
-    if not token or not password or not os.environ.get("LOCALMIND_USERNAME"):
+    if (not token or not password or not os.environ.get("LOCALMIND_USERNAME") or
+            (os.environ.get("VERCEL") and not os.environ.get("LOCALMIND_SESSION_SECRET"))):
         return False
     try:
         timestamp, signature = token.split(".", 1)
@@ -80,8 +79,12 @@ async def require_login(request: Request, call_next):
 async def login(credentials: LoginRequest, response: Response):
     username = os.environ.get("LOCALMIND_USERNAME", "")
     password = os.environ.get("LOCALMIND_PASSWORD", "")
-    if not username or not password:
-        raise HTTPException(503, "Login is not configured on this host.")
+    if not username or not password or (os.environ.get("VERCEL") and not os.environ.get("LOCALMIND_SESSION_SECRET")):
+        raise HTTPException(
+            503,
+            "Login is not configured. Set LOCALMIND_USERNAME, LOCALMIND_PASSWORD, "
+            "and LOCALMIND_SESSION_SECRET on this host.",
+        )
     if not (hmac.compare_digest(credentials.username, username) and
             hmac.compare_digest(credentials.password, password)):
         raise HTTPException(401, "Incorrect username or password.")
@@ -89,7 +92,7 @@ async def login(credentials: LoginRequest, response: Response):
     signature = hmac.new((SESSION_SECRET + password).encode(), timestamp.encode(), hashlib.sha256).hexdigest()
     response.set_cookie(
         SESSION_COOKIE, f"{timestamp}.{signature}", max_age=SESSION_SECONDS,
-        httponly=True, samesite="lax", path="/",
+        httponly=True, samesite="lax", secure=bool(os.environ.get("VERCEL")), path="/",
     )
     return {"username": username}
 
@@ -125,89 +128,76 @@ class SummarizeRequest(BaseModel):
     length: Literal["short", "medium", "detailed"] = "medium"
 
 
-async def call_ollama_errors(coro):
-    """Turn Ollama failures into readable HTTP errors."""
+async def call_model_errors(coro):
+    """Turn model configuration and transport failures into readable HTTP errors."""
     try:
         return await coro
+    except ModelConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
     except httpx.ConnectError:
         raise HTTPException(
             status_code=503,
-            detail="Cannot reach Ollama. Start it with 'ollama serve' and make sure the model is pulled.",
+            detail="Cannot reach the model server. Check the configured model endpoint.",
         )
     except httpx.TimeoutException:
         raise HTTPException(
             status_code=504,
             detail="The model took too long to respond. Try a shorter message.",
         )
+    except httpx.RequestError:
+        raise HTTPException(status_code=503, detail="The model server connection failed.")
     except httpx.HTTPStatusError as exc:
         raise HTTPException(
             status_code=502,
-            detail=f"Ollama returned an error ({exc.response.status_code}). Is '{MODEL_NAME}' pulled?",
+            detail=f"The model server returned an error ({exc.response.status_code}). Check its model name and credentials.",
         )
 
 
 @app.get("/api/health")
 async def health():
-    ollama_ok = False
+    model_ok = False
+    config_error = None
     try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
-            r = await client.get("http://127.0.0.1:11434/api/tags")
-            ollama_ok = r.status_code == 200
+        model_ok = await reachable()
+    except ModelConfigurationError as exc:
+        config_error = str(exc)
     except httpx.HTTPError:
         pass
     return {
         "status": "LocalMind AI backend is running",
-        "ollama": "reachable" if ollama_ok else "unreachable",
-        "model": MODEL_NAME,
-    }
-
-
-def build_payload(request: ChatRequest, stream: bool) -> dict:
-    history = [m.model_dump() for m in request.history][-MAX_HISTORY_MESSAGES:]
-    return {
-        "model": MODEL_NAME,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            *history,
-            {"role": "user", "content": request.message},
-        ],
-        "stream": stream,
+        "model_server": "reachable" if model_ok else "unavailable",
+        "model": model_name(),
+        "configuration_error": config_error,
+        "login_configured": bool(os.environ.get("LOCALMIND_USERNAME") and os.environ.get("LOCALMIND_PASSWORD") and
+                                 (not os.environ.get("VERCEL") or os.environ.get("LOCALMIND_SESSION_SECRET"))),
     }
 
 
 async def _chat(request: ChatRequest) -> str:
-    async with httpx.AsyncClient(timeout=180.0) as client:
-        response = await client.post(OLLAMA_URL, json=build_payload(request, stream=False))
-        response.raise_for_status()
-        return response.json()["message"]["content"]
+    return await ask(build_messages(request))
+
+
+def build_messages(request: ChatRequest):
+    history = [m.model_dump() for m in request.history][-MAX_HISTORY_MESSAGES:]
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        *history,
+        {"role": "user", "content": request.message},
+    ]
 
 
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
     """Non-streaming chat: returns the whole reply at once."""
-    reply = await call_ollama_errors(_chat(request))
+    reply = await call_model_errors(_chat(request))
     return {"reply": reply}
-
-
-async def _open_stream(payload: dict):
-    """Connect to Ollama and check it answered, before any text is sent to the browser."""
-    client = httpx.AsyncClient(timeout=180.0)
-    try:
-        response = await client.send(
-            client.build_request("POST", OLLAMA_URL, json=payload), stream=True
-        )
-        response.raise_for_status()
-        return client, response
-    except BaseException:
-        await client.aclose()
-        raise
 
 
 @app.post("/api/chat/stream")
 async def chat_stream(request: ChatRequest):
     """Streaming chat: sends the reply piece by piece as the model produces it."""
-    client, response = await call_ollama_errors(
-        _open_stream(build_payload(request, stream=True))
+    client, response = await call_model_errors(
+        open_stream(build_messages(request))
     )
 
     async def pieces():
@@ -216,13 +206,12 @@ async def chat_stream(request: ChatRequest):
                 if not line:
                     continue
                 try:
-                    data = json.loads(line)
-                except ValueError:
+                    text, done = stream_content(line)
+                except (ValueError, KeyError, IndexError):
                     continue
-                text = data.get("message", {}).get("content", "")
                 if text:
                     yield text
-                if data.get("done"):
+                if done:
                     break
         except httpx.HTTPError:
             yield "\n\n[The connection to the model was lost.]"
@@ -239,7 +228,7 @@ async def chat_stream(request: ChatRequest):
 
 @app.post("/api/summarize")
 async def summarize(request: SummarizeRequest):
-    return await call_ollama_errors(summarize_document(request.text, request.length))
+    return await call_model_errors(summarize_document(request.text, request.length))
 
 
 def extract_text(filename: str, data: bytes) -> str:
@@ -280,13 +269,13 @@ async def summarize_file(
     if len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="File is too large. The limit is 5 MB.")
     text = extract_text(file.filename or "", data)
-    result = await call_ollama_errors(summarize_document(text, length))
+    result = await call_model_errors(summarize_document(text, length))
     return {**result, "filename": file.filename, "characters": len(text)}
 
 
 @app.post("/api/improve-text")
 async def improve(request: GrammarRequest):
-    improved = await call_ollama_errors(
+    improved = await call_model_errors(
         improve_text(request.text, request.task)
     )
     return {"improved_text": improved}

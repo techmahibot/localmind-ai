@@ -23,8 +23,8 @@ The application runs an LLM locally using Ollama and allows multiple users conne
 |---|---|
 | Frontend | React.js, Vite |
 | Backend | Python, FastAPI |
-| LLM Runtime | Ollama |
-| AI Model | Qwen 2.5 3B |
+| LLM Runtime | Local Ollama; optional hosted OpenAI-compatible API for online demos |
+| AI Model | Qwen 2.5 3B by default; configurable model/provider |
 | Communication | REST API |
 | Network | Local Area Network (LAN) |
 
@@ -130,6 +130,22 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
 Set your own credentials before starting the backend. The app does not ship with a default password; without these settings, sign-in returns an error. The session secret keeps users signed in across backend restarts. Do not commit real passwords or secrets to Git. This is a single shared local account, intended for a trusted LAN; each browser keeps its own chat history. LAN traffic uses plain HTTP by default, so use HTTPS if the network is not trusted.
+
+### Hosted demo on Vercel
+
+Vercel cannot call Ollama on your computer through `127.0.0.1`. To run an **internet-hosted demo**, configure these Production environment variables in the Vercel project, then redeploy:
+
+```text
+LOCALMIND_USERNAME=your-username
+LOCALMIND_PASSWORD=your-private-password
+LOCALMIND_SESSION_SECRET=your-long-random-secret
+LLM_PROVIDER=openai
+LLM_BASE_URL=https://your-provider.example/v1
+LLM_MODEL=your-provider-model-id
+LLM_API_KEY=your-provider-api-key
+```
+
+The hosted endpoint must implement the OpenAI-compatible chat completions and models APIs, including streaming. Use the endpoint and model name provided by your model host. Keep the key in Vercel environment settings, never in this repository or the frontend. The public `/api/health` route reports whether login is configured and whether the model endpoint is reachable without exposing credentials. A Vercel deployment uses the internet and is only a demonstration; for the project's disconnected-network requirement, run Ollama and the backend on a LAN host as described above. A remotely hosted Ollama server can instead use `LLM_PROVIDER=ollama` and `LLM_BASE_URL=https://your-reachable-ollama-host`, but that host must already be running and accessible to Vercel.
 
 ### 7. Access the application
 

@@ -1,7 +1,4 @@
-import httpx
-
-OLLAMA_URL = "http://127.0.0.1:11434/api/chat"
-MODEL_NAME = "qwen2.5:3b"
+from llm import ask
 
 # A 3B model only "sees" a few thousand tokens at once, so long documents are
 # split into sections, each section is summarized, and then the partial
@@ -44,19 +41,14 @@ def split_text(text: str, size: int = CHUNK_CHARS):
     return chunks
 
 
-async def _ask(client: httpx.AsyncClient, instruction: str, text: str) -> str:
-    payload = {
-        "model": MODEL_NAME,
-        "messages": [
+async def _ask(instruction: str, text: str) -> str:
+    return await ask(
+        [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": f"{instruction}\n\nText:\n{text}"},
         ],
-        "options": {"num_ctx": NUM_CTX},
-        "stream": False,
-    }
-    response = await client.post(OLLAMA_URL, json=payload)
-    response.raise_for_status()
-    return response.json()["message"]["content"]
+        options={"num_ctx": NUM_CTX},
+    )
 
 
 async def summarize_document(text: str, length: str = "medium") -> dict:
@@ -66,21 +58,19 @@ async def summarize_document(text: str, length: str = "medium") -> dict:
     truncated = len(chunks) > MAX_CHUNKS
     chunks = chunks[:MAX_CHUNKS]
 
-    async with httpx.AsyncClient(timeout=180.0) as client:
-        if len(chunks) == 1:
-            summary = await _ask(client, instruction, chunks[0])
-        else:
-            partials = []
-            for i, chunk in enumerate(chunks, start=1):
-                partials.append(
-                    await _ask(
-                        client,
-                        f"This is part {i} of {len(chunks)} of a longer document. "
-                        "Summarize it in at most 150 words, keeping key facts and numbers.",
-                        chunk,
-                    )
+    if len(chunks) == 1:
+        summary = await _ask(instruction, chunks[0])
+    else:
+        partials = []
+        for i, chunk in enumerate(chunks, start=1):
+            partials.append(
+                await _ask(
+                    f"This is part {i} of {len(chunks)} of a longer document. "
+                    "Summarize it in at most 150 words, keeping key facts and numbers.",
+                    chunk,
                 )
-            summary = await _ask(client, instruction, "\n\n".join(partials))
+            )
+        summary = await _ask(instruction, "\n\n".join(partials))
 
     return {"summary": summary, "chunks": len(chunks), "truncated": truncated}
 
