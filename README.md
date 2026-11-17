@@ -41,6 +41,7 @@ The AI model and backend run on a central host computer. Other devices connected
 - Locally hosted LLM inference
 - Context-aware follow-up questions
 - Conversation history
+- Local username/password sign-in with a 12-hour browser session
 - Responsive chatbot interface
 - Multiple LAN client access
 - No dependency on external AI APIs
@@ -122,8 +123,13 @@ npm run build
 From the backend directory:
 
 ```bash
+export LOCALMIND_USERNAME="admin"
+export LOCALMIND_PASSWORD="choose-a-long-private-password"
+export LOCALMIND_SESSION_SECRET="choose-a-separate-random-secret"
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
+
+Set your own credentials before starting the backend. The app does not ship with a default password; without these settings, sign-in returns an error. The session secret keeps users signed in across backend restarts. Do not commit real passwords or secrets to Git. This is a single shared local account, intended for a trusted LAN; each browser keeps its own chat history. LAN traffic uses plain HTTP by default, so use HTTPS if the network is not trusted.
 
 ### 7. Access the application
 
@@ -140,6 +146,7 @@ http://HOST_IP_ADDRESS:8000
 ```
 
 Replace `HOST_IP_ADDRESS` with the local IP address of the computer hosting the application.
+The browser shows the sign-in page first. Use the username and password configured on the host.
 
 ## Offline Functionality
 

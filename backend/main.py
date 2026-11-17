@@ -1,12 +1,17 @@
 import io
 import json
+import os
+import hmac
+import hashlib
+import secrets
+import time
 from pathlib import Path
-from typing import List, Literal
+from typing import List, Literal, Optional
 
 import httpx
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from grammer import improve_text
@@ -18,6 +23,9 @@ OLLAMA_URL = "http://127.0.0.1:11434/api/chat"
 MODEL_NAME = "qwen2.5:3b"
 MAX_HISTORY_MESSAGES = 20  # keep the prompt small so a 3B model stays fast
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB
+SESSION_SECONDS = 12 * 60 * 60
+SESSION_SECRET = os.environ.get("LOCALMIND_SESSION_SECRET") or secrets.token_hex(32)
+SESSION_COOKIE = "localmind_session"
 
 SYSTEM_PROMPT = (
     "You are LocalMind AI, an offline AI assistant. "
@@ -33,10 +41,68 @@ app = FastAPI(title="LocalMind AI")
 # Allows the Vite dev server (port 5173) to call the API during development.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+def valid_session(token: Optional[str]) -> bool:
+    password = os.environ.get("LOCALMIND_PASSWORD", "")
+    if not token or not password or not os.environ.get("LOCALMIND_USERNAME"):
+        return False
+    try:
+        timestamp, signature = token.split(".", 1)
+        issued = int(timestamp)
+    except (ValueError, TypeError):
+        return False
+    if issued > time.time() + 60 or time.time() - issued > SESSION_SECONDS:
+        return False
+    expected = hmac.new((SESSION_SECRET + password).encode(), timestamp.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(signature, expected)
+
+
+@app.middleware("http")
+async def require_login(request: Request, call_next):
+    path = request.url.path
+    if path.startswith("/api/") and path not in ("/api/health", "/api/auth/login"):
+        if not valid_session(request.cookies.get(SESSION_COOKIE)):
+            return JSONResponse({"detail": "Please sign in to continue."}, status_code=401)
+    return await call_next(request)
+
+
+@app.post("/api/auth/login")
+async def login(credentials: LoginRequest, response: Response):
+    username = os.environ.get("LOCALMIND_USERNAME", "")
+    password = os.environ.get("LOCALMIND_PASSWORD", "")
+    if not username or not password:
+        raise HTTPException(503, "Login is not configured on this host.")
+    if not (hmac.compare_digest(credentials.username, username) and
+            hmac.compare_digest(credentials.password, password)):
+        raise HTTPException(401, "Incorrect username or password.")
+    timestamp = str(int(time.time()))
+    signature = hmac.new((SESSION_SECRET + password).encode(), timestamp.encode(), hashlib.sha256).hexdigest()
+    response.set_cookie(
+        SESSION_COOKIE, f"{timestamp}.{signature}", max_age=SESSION_SECONDS,
+        httponly=True, samesite="lax", path="/",
+    )
+    return {"username": username}
+
+
+@app.get("/api/auth/me")
+async def current_user():
+    return {"username": os.environ["LOCALMIND_USERNAME"]}
+
+
+@app.post("/api/auth/logout")
+async def logout(response: Response):
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    return {"ok": True}
 
 
 class HistoryMessage(BaseModel):

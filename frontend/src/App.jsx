@@ -4,10 +4,57 @@ import "./App.css";
 const STORAGE_KEY = "localmind-chat";
 const NETWORK_ERROR = "Cannot reach the LocalMind server. Check that the backend is running.";
 
+function LoginPage({ onLogin }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!username.trim() || !password || loading) return;
+    setLoading(true);
+    setError("");
+    try {
+      const data = await postJson("/api/auth/login", { username: username.trim(), password });
+      setPassword("");
+      onLogin(data.username);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <main className="login-page">
+      <form className="login-card" onSubmit={submit}>
+        <div className="login-icon" aria-hidden="true">◎</div>
+        <h1>Welcome to LocalMind AI</h1>
+        <p>Sign in to use your offline AI assistant on this network.</p>
+        <label htmlFor="username">Username</label>
+        <input id="username" autoComplete="username" value={username}
+          onChange={(e) => setUsername(e.target.value)} required autoFocus />
+        <label htmlFor="password">Password</label>
+        <input id="password" type="password" autoComplete="current-password"
+          value={password} onChange={(e) => setPassword(e.target.value)} required />
+        {error && <div className="error" role="alert">{error}</div>}
+        <button className="login-button" type="submit" disabled={loading}>
+          {loading ? "Signing in…" : "Sign in"}
+        </button>
+        <small>Runs on your local network · No cloud account needed</small>
+      </form>
+    </main>
+  );
+}
+
 // Turns a failed HTTP response into a readable Error message.
 async function errorFromResponse(res) {
   const data = await res.json().catch(() => ({}));
   const detail = typeof data.detail === "string" ? data.detail : "Something went wrong.";
+  if (res.status === 401 && detail === "Please sign in to continue.") {
+    window.dispatchEvent(new Event("localmind-session-expired"));
+  }
   return new Error(detail);
 }
 
@@ -273,11 +320,50 @@ function SummarizePanel() {
 
 export default function App() {
   const [tab, setTab] = useState("chat");
+  const [user, setUser] = useState(null);
+  const [checking, setChecking] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    fetch("/api/auth/me")
+      .then((res) => res.ok ? res.json() : null)
+      .then((data) => { if (active) setUser(data?.username || null); })
+      .catch(() => { if (active) setUser(null); })
+      .finally(() => { if (active) setChecking(false); });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    const expired = () => {
+      localStorage.removeItem(STORAGE_KEY);
+      setUser(null);
+    };
+    window.addEventListener("localmind-session-expired", expired);
+    return () => window.removeEventListener("localmind-session-expired", expired);
+  }, []);
+
+  async function logout() {
+    try {
+      await postJson("/api/auth/logout", {});
+      localStorage.removeItem(STORAGE_KEY);
+      setUser(null);
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+
+  if (checking) return <div className="login-page">Checking session…</div>;
+  if (!user) return <LoginPage onLogin={(name) => {
+    localStorage.removeItem(STORAGE_KEY);
+    setUser(name);
+  }} />;
   return (
     <div className="app">
       <header>
         <h1>LocalMind AI</h1>
-        <p>Offline assistant running on a local model</p>
+        <div className="account-row"><p>Offline assistant running on a local model</p>
+          <div className="account">{user} <button onClick={logout}>Sign out</button></div>
+        </div>
         <nav>
           <button className={tab === "chat" ? "active" : ""} onClick={() => setTab("chat")}>
             Chat
