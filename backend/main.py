@@ -1,11 +1,7 @@
 import io
 import os
-import hmac
-import hashlib
-import secrets
-import time
 from pathlib import Path
-from typing import List, Literal, Optional
+from typing import List, Literal
 
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
@@ -18,11 +14,14 @@ from pypdf import PdfReader
 
 from summarizer import summarize_document
 from llm import ModelConfigurationError, ask, model_name, open_stream, reachable, stream_content
+from auth import (
+    AuthConfigurationError, UsernameTaken, SESSION_SECONDS, create_session,
+    find_user, find_user_by_id, register, session_secret, session_user_id,
+    verify_password,
+)
 
 MAX_HISTORY_MESSAGES = 20  # keep the prompt small so a 3B model stays fast
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB
-SESSION_SECONDS = 12 * 60 * 60
-SESSION_SECRET = os.environ.get("LOCALMIND_SESSION_SECRET") or secrets.token_hex(32)
 SESSION_COOKIE = "localmind_session"
 
 SYSTEM_PROMPT = (
@@ -50,56 +49,64 @@ class LoginRequest(BaseModel):
     password: str
 
 
-def valid_session(token: Optional[str]) -> bool:
-    password = os.environ.get("LOCALMIND_PASSWORD", "")
-    if (not token or not password or not os.environ.get("LOCALMIND_USERNAME") or
-            (os.environ.get("VERCEL") and not os.environ.get("LOCALMIND_SESSION_SECRET"))):
-        return False
-    try:
-        timestamp, signature = token.split(".", 1)
-        issued = int(timestamp)
-    except (ValueError, TypeError):
-        return False
-    if issued > time.time() + 60 or time.time() - issued > SESSION_SECONDS:
-        return False
-    expected = hmac.new((SESSION_SECRET + password).encode(), timestamp.encode(), hashlib.sha256).hexdigest()
-    return hmac.compare_digest(signature, expected)
-
-
 @app.middleware("http")
 async def require_login(request: Request, call_next):
     path = request.url.path
-    if path.startswith("/api/") and path not in ("/api/health", "/api/auth/login"):
-        if not valid_session(request.cookies.get(SESSION_COOKIE)):
+    if path.startswith("/api/") and path not in ("/api/health", "/api/auth/login", "/api/auth/signup"):
+        try:
+            user_id = session_user_id(request.cookies.get(SESSION_COOKIE))
+        except AuthConfigurationError as exc:
+            return JSONResponse({"detail": str(exc)}, status_code=503)
+        if not user_id:
             return JSONResponse({"detail": "Please sign in to continue."}, status_code=401)
+        request.state.user_id = user_id
     return await call_next(request)
+
+
+def set_session(response: Response, user_id: int):
+    response.set_cookie(
+        SESSION_COOKIE, create_session(user_id), max_age=SESSION_SECONDS,
+        httponly=True, samesite="lax", secure=bool(os.environ.get("VERCEL")), path="/",
+    )
+
+
+@app.post("/api/auth/signup", status_code=201)
+async def signup(credentials: LoginRequest, response: Response):
+    try:
+        session_secret()
+        user_id, username = register(credentials.username, credentials.password)
+        set_session(response, user_id)
+    except AuthConfigurationError as exc:
+        raise HTTPException(503, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except UsernameTaken:
+        raise HTTPException(409, "This username is already taken.")
+    return {"username": username}
 
 
 @app.post("/api/auth/login")
 async def login(credentials: LoginRequest, response: Response):
-    username = os.environ.get("LOCALMIND_USERNAME", "")
-    password = os.environ.get("LOCALMIND_PASSWORD", "")
-    if not username or not password or (os.environ.get("VERCEL") and not os.environ.get("LOCALMIND_SESSION_SECRET")):
-        raise HTTPException(
-            503,
-            "Login is not configured. Set LOCALMIND_USERNAME, LOCALMIND_PASSWORD, "
-            "and LOCALMIND_SESSION_SECRET on this host.",
-        )
-    if not (hmac.compare_digest(credentials.username, username) and
-            hmac.compare_digest(credentials.password, password)):
+    try:
+        session_secret()
+        user = find_user(credentials.username)
+    except AuthConfigurationError as exc:
+        raise HTTPException(503, str(exc))
+    if not user or not verify_password(credentials.password, user[2]):
         raise HTTPException(401, "Incorrect username or password.")
-    timestamp = str(int(time.time()))
-    signature = hmac.new((SESSION_SECRET + password).encode(), timestamp.encode(), hashlib.sha256).hexdigest()
-    response.set_cookie(
-        SESSION_COOKIE, f"{timestamp}.{signature}", max_age=SESSION_SECONDS,
-        httponly=True, samesite="lax", secure=bool(os.environ.get("VERCEL")), path="/",
-    )
-    return {"username": username}
+    set_session(response, user[0])
+    return {"username": user[1]}
 
 
 @app.get("/api/auth/me")
-async def current_user():
-    return {"username": os.environ["LOCALMIND_USERNAME"]}
+async def current_user(request: Request):
+    try:
+        user = find_user_by_id(request.state.user_id)
+    except AuthConfigurationError as exc:
+        raise HTTPException(503, str(exc))
+    if user is None:
+        raise HTTPException(401, "Please sign in to continue.")
+    return {"username": user[1]}
 
 
 @app.post("/api/auth/logout")
@@ -168,8 +175,9 @@ async def health():
         "model_server": "reachable" if model_ok else "unavailable",
         "model": model_name(),
         "configuration_error": config_error,
-        "login_configured": bool(os.environ.get("LOCALMIND_USERNAME") and os.environ.get("LOCALMIND_PASSWORD") and
-                                 (not os.environ.get("VERCEL") or os.environ.get("LOCALMIND_SESSION_SECRET"))),
+        "account_storage": "configured" if (os.environ.get("DATABASE_URL") or not os.environ.get("VERCEL")) else "unavailable",
+        "login_configured": bool((os.environ.get("DATABASE_URL") or not os.environ.get("VERCEL")) and
+                                 (os.environ.get("LOCALMIND_SESSION_SECRET") or not os.environ.get("VERCEL"))),
     }
 
 

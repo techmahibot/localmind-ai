@@ -4,20 +4,29 @@ import "./App.css";
 const STORAGE_KEY = "localmind-chat";
 const NETWORK_ERROR = "Cannot reach the LocalMind server. Check that the backend is running.";
 
-function LoginPage({ onLogin }) {
+function AuthPage({ onLogin }) {
+  const [mode, setMode] = useState("login");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
   async function submit(e) {
     e.preventDefault();
     if (!username.trim() || !password || loading) return;
+    if (mode === "signup" && password !== confirmPassword) {
+      setError("Passwords do not match.");
+      return;
+    }
     setLoading(true);
     setError("");
     try {
-      const data = await postJson("/api/auth/login", { username: username.trim(), password });
+      const data = await postJson(`/api/auth/${mode === "signup" ? "signup" : "login"}`, {
+        username: username.trim(), password,
+      });
       setPassword("");
+      setConfirmPassword("");
       onLogin(data.username);
     } catch (e) {
       setError(e.message);
@@ -30,19 +39,36 @@ function LoginPage({ onLogin }) {
     <main className="login-page">
       <form className="login-card" onSubmit={submit}>
         <div className="login-icon" aria-hidden="true">◎</div>
-        <h1>Welcome to LocalMind AI</h1>
-        <p>Sign in to use your offline AI assistant on this network.</p>
+        <h1>{mode === "signup" ? "Create your account" : "Welcome to LocalMind AI"}</h1>
+        <p>{mode === "signup" ? "Choose a username and password to get started." : "Log in to continue to your AI assistant."}</p>
         <label htmlFor="username">Username</label>
         <input id="username" autoComplete="username" value={username}
-          onChange={(e) => setUsername(e.target.value)} required autoFocus />
+          onChange={(e) => setUsername(e.target.value)} minLength={mode === "signup" ? 3 : undefined}
+          maxLength={mode === "signup" ? 30 : undefined} required autoFocus />
+        {mode === "signup" && <small className="field-hint">3–30 letters, numbers, or underscores</small>}
         <label htmlFor="password">Password</label>
-        <input id="password" type="password" autoComplete="current-password"
-          value={password} onChange={(e) => setPassword(e.target.value)} required />
+        <input id="password" type="password" autoComplete={mode === "signup" ? "new-password" : "current-password"}
+          value={password} onChange={(e) => setPassword(e.target.value)}
+          minLength={mode === "signup" ? 10 : undefined} required />
+        {mode === "signup" && <>
+          <small className="field-hint">At least 10 characters</small>
+          <label htmlFor="confirm-password">Confirm password</label>
+          <input id="confirm-password" type="password" autoComplete="new-password"
+            value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} required />
+        </>}
         {error && <div className="error" role="alert">{error}</div>}
         <button className="login-button" type="submit" disabled={loading}>
-          {loading ? "Signing in…" : "Sign in"}
+          {loading ? "Please wait…" : mode === "signup" ? "Create account" : "Log in"}
         </button>
-        <small>Runs on your local network · No cloud account needed</small>
+        <div className="auth-switch">
+          {mode === "signup" ? "Already have an account?" : "New to LocalMind AI?"}
+          <button type="button" onClick={() => {
+            setMode(mode === "signup" ? "login" : "signup");
+            setPassword("");
+            setConfirmPassword("");
+            setError("");
+          }}>{mode === "signup" ? "Log in" : "Sign up"}</button>
+        </div>
       </form>
     </main>
   );
@@ -353,7 +379,7 @@ export default function App() {
   }
 
   if (checking) return <div className="login-page">Checking session…</div>;
-  if (!user) return <LoginPage onLogin={(name) => {
+  if (!user) return <AuthPage onLogin={(name) => {
     localStorage.removeItem(STORAGE_KEY);
     setUser(name);
   }} />;

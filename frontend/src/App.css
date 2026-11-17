@@ -54,6 +54,10 @@
 }
 .login-button:disabled { opacity: 0.6; cursor: wait; }
 .login-card small { margin-top: 12px; color: #8b949e; text-align: center; }
+.login-card .field-hint { margin: -4px 0 6px; text-align: left; }
+.auth-switch { display: flex; justify-content: center; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; color: #8b949e; }
+.auth-switch button { padding: 4px; background: none; border: 0; color: #58a6ff; font: inherit; cursor: pointer; }
+.auth-switch button:hover { text-decoration: underline; }
 .account-row { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
 .account { display: flex; gap: 10px; align-items: center; white-space: nowrap; }
 .account button { background: none; border: 1px solid #30363d; color: #e6edf3; border-radius: 8px; padding: 6px 10px; cursor: pointer; }

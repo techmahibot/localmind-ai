@@ -41,7 +41,7 @@ The AI model and backend run on a central host computer. Other devices connected
 - Locally hosted LLM inference
 - Context-aware follow-up questions
 - Conversation history
-- Local username/password sign-in with a 12-hour browser session
+- Individual sign-up and login with saved user accounts and 12-hour browser sessions
 - Responsive chatbot interface
 - Multiple LAN client access
 - No dependency on external AI APIs
@@ -62,6 +62,8 @@ localmind-ai/
 │
 ├── backend/
 │   ├── main.py
+│   ├── auth.py
+│   ├── llm.py
 │   ├── requirements.txt
 │   └── venv/
 │
@@ -123,21 +125,17 @@ npm run build
 From the backend directory:
 
 ```bash
-export LOCALMIND_USERNAME="admin"
-export LOCALMIND_PASSWORD="choose-a-long-private-password"
-export LOCALMIND_SESSION_SECRET="choose-a-separate-random-secret"
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-Set your own credentials before starting the backend. The app does not ship with a default password; without these settings, sign-in returns an error. The session secret keeps users signed in across backend restarts. Do not commit real passwords or secrets to Git. This is a single shared local account, intended for a trusted LAN; each browser keeps its own chat history. LAN traffic uses plain HTTP by default, so use HTTPS if the network is not trusted.
+Open the app and choose **Sign up** to create the first account. Local accounts are stored in `backend/localmind.db`, which is excluded from Git. Set `LOCALMIND_SESSION_SECRET` to a long random value if you want browser sessions to survive backend restarts. Each browser keeps its own chat history. LAN traffic uses plain HTTP by default, so use HTTPS if the network is not trusted.
 
 ### Hosted demo on Vercel
 
-Vercel cannot call Ollama on your computer through `127.0.0.1`. To run an **internet-hosted demo**, configure these Production environment variables in the Vercel project, then redeploy:
+Vercel cannot call Ollama on your computer through `127.0.0.1`, and its filesystem cannot persist a local SQLite database. To run an **internet-hosted demo**, connect a PostgreSQL database (for example, a Neon Postgres integration from the Vercel Marketplace) to this Vercel project. It should provide `DATABASE_URL`. Then configure these Production environment variables and redeploy:
 
 ```text
-LOCALMIND_USERNAME=your-username
-LOCALMIND_PASSWORD=your-private-password
+DATABASE_URL=your-postgresql-connection-string
 LOCALMIND_SESSION_SECRET=your-long-random-secret
 LLM_PROVIDER=openai
 LLM_BASE_URL=https://your-provider.example/v1
@@ -145,7 +143,7 @@ LLM_MODEL=your-provider-model-id
 LLM_API_KEY=your-provider-api-key
 ```
 
-The hosted endpoint must implement the OpenAI-compatible chat completions and models APIs, including streaming. Use the endpoint and model name provided by your model host. Keep the key in Vercel environment settings, never in this repository or the frontend. The public `/api/health` route reports whether login is configured and whether the model endpoint is reachable without exposing credentials. A Vercel deployment uses the internet and is only a demonstration; for the project's disconnected-network requirement, run Ollama and the backend on a LAN host as described above. A remotely hosted Ollama server can instead use `LLM_PROVIDER=ollama` and `LLM_BASE_URL=https://your-reachable-ollama-host`, but that host must already be running and accessible to Vercel.
+The database integration can inject `DATABASE_URL` automatically; do not enter it twice. Once deployed, each person uses **Sign up** to choose a username and password. Passwords are salted and hashed in the database; the application does not store their plain text values. Keep the database URL, session secret, and model key in Vercel environment settings, never in this repository or the frontend. The hosted endpoint must implement the OpenAI-compatible chat completions and models APIs, including streaming. The public `/api/health` route reports whether account storage and the model endpoint are configured without exposing credentials. A Vercel deployment uses the internet and is only a demonstration; for the project's disconnected-network requirement, run Ollama and the backend on a LAN host as described above.
 
 ### 7. Access the application
 
@@ -162,7 +160,7 @@ http://HOST_IP_ADDRESS:8000
 ```
 
 Replace `HOST_IP_ADDRESS` with the local IP address of the computer hosting the application.
-The browser shows the sign-in page first. Use the username and password configured on the host.
+The browser shows Log in and Sign up. New users create their own accounts; returning users log in with the same username and password.
 
 ## Offline Functionality
 
@@ -192,7 +190,7 @@ The application should be tested for:
 ## Future Enhancements
 
 - Streaming AI responses
-- User authentication
+- Password reset and account management
 - Multiple model selection
 - Improved conversation management
 - Document-based question answering (RAG)
