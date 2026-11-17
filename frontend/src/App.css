@@ -155,6 +155,58 @@ button:disabled {
   line-height: 1.55;
 }
 
+.buttons button.stop {
+  background: #b62324;
+}
+
+.file-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.file-label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: #8b949e;
+  font-size: 0.9rem;
+}
+
+.file-label input {
+  color: #e6edf3;
+  font: inherit;
+}
+
+.file-chosen {
+  color: #e6edf3;
+  display: inline-flex;
+  gap: 10px;
+  align-items: center;
+}
+
+button.link {
+  background: none;
+  border: none;
+  color: #58a6ff;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+}
+
+textarea:disabled {
+  opacity: 0.5;
+}
+
+.hint,
+.meta {
+  color: #8b949e;
+  font-size: 0.88rem;
+  margin: 10px 0 0;
+}
+
 @media (max-width: 520px) {
   .composer {
     flex-direction: column;
