@@ -88,9 +88,41 @@ def ensure_users_table(conn, postgres):
             "password_hash TEXT NOT NULL)"
         )
 
+
 def database_ready():
-    with connection() as (conn, _):
-        return conn.execute("SELECT 1").fetchone()[0] == 1
+    with connection() as (conn, postgres):
+        result = conn.execute("SELECT 1").fetchone()
+
+        if result is None or result[0] != 1:
+            return False
+
+        ensure_users_table(conn, postgres)
+
+        if postgres:
+            table = conn.execute(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM information_schema.tables
+                    WHERE table_schema = current_schema()
+                    AND table_name = 'localmind_users'
+                )
+                """
+            ).fetchone()
+        else:
+            table = conn.execute(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM sqlite_master
+                    WHERE type = 'table'
+                    AND name = 'localmind_users'
+                )
+                """
+            ).fetchone()
+
+        return table is not None and bool(table[0])
+
 
 
 def hash_password(password):
