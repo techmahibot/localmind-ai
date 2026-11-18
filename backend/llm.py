@@ -96,12 +96,12 @@ async def ask(messages, options=None):
             raise ModelResponseError("The model returned invalid JSON.") from exc
 
 
-async def open_stream(messages):
+async def open_stream(messages, options=None):
     _, url, _, headers = configuration()
     client = httpx.AsyncClient(timeout=180.0)
     try:
         response = await client.send(
-            client.build_request("POST", url, headers=headers, json=payload(messages, stream=True)),
+            client.build_request("POST", url, headers=headers, json=payload(messages, stream=True, options=options)),
             stream=True,
         )
         response.raise_for_status()

@@ -1,4 +1,3 @@
-import io
 import os
 from pathlib import Path
 from typing import List, Literal
@@ -10,7 +9,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from grammer import improve_text
-from pypdf import PdfReader
+from documents import extract_text, router as documents_router
 
 from summarizer import summarize_document
 from llm import ModelConfigurationError, ModelResponseError, ask, model_name, open_stream, reachable, stream_content
@@ -43,6 +42,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+app.include_router(documents_router)
 
 
 class LoginRequest(BaseModel):
@@ -264,38 +266,6 @@ async def summarize(request: SummarizeRequest):
     if not request.text.strip():
         raise HTTPException(422, "Text cannot be blank.")
     return await call_model_errors(summarize_document(request.text, request.length))
-
-
-def extract_text(filename: str, data: bytes) -> str:
-    """Get plain text out of an uploaded .txt, .md or .pdf file."""
-    name = filename.lower()
-    if name.endswith(".pdf"):
-        try:
-            reader = PdfReader(io.BytesIO(data))
-            text = "\n".join((page.extract_text() or "") for page in reader.pages)
-        except Exception:
-            raise HTTPException(
-                status_code=422,
-                detail="Could not read that PDF. It may be damaged or password protected.",
-            )
-    elif name.endswith((".txt", ".md")):
-        try:
-            text = data.decode("utf-8")
-        except UnicodeDecodeError:
-            raise HTTPException(422, "Text files must be UTF-8 encoded.")
-    else:
-        raise HTTPException(
-            status_code=415,
-            detail="Unsupported file type. Please upload a .txt, .md or .pdf file.",
-        )
-
-    text = text.strip()
-    if not text:
-        raise HTTPException(
-            status_code=422,
-            detail="No readable text found in that file. Scanned PDFs (images of text) are not supported.",
-        )
-    return text
 
 
 @app.post("/api/summarize/file")
