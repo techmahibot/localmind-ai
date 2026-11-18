@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import "./App.css";
 
 const STORAGE_KEY = "localmind-chat";
+const chatKey = (username) => `${STORAGE_KEY}:${username.toLowerCase()}`;
 const NETWORK_ERROR = "Cannot reach the LocalMind server. Check that the backend is running.";
 
 function AuthPage({ onLogin }) {
@@ -110,16 +111,17 @@ async function postForm(url, form) {
   return res.json();
 }
 
-function loadSaved() {
+function loadSaved(username) {
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
+    const saved = JSON.parse(localStorage.getItem(chatKey(username)));
+    return Array.isArray(saved) ? saved : [];
   } catch {
     return [];
   }
 }
 
-function ChatPanel() {
-  const [messages, setMessages] = useState(loadSaved);
+function ChatPanel({ username }) {
+  const [messages, setMessages] = useState(() => loadSaved(username));
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -128,12 +130,12 @@ function ChatPanel() {
 
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(messages));
+      localStorage.setItem(chatKey(username), JSON.stringify(messages));
     } catch {
       /* storage unavailable, ignore */
     }
     bottomRef.current?.scrollIntoView({ behavior: "auto" });
-  }, [messages, loading]);
+  }, [messages, loading, username]);
 
   async function send() {
     const text = input.trim();
@@ -404,7 +406,7 @@ export default function App() {
       </header>
       {/* Both panels stay mounted so switching tabs keeps your work. */}
       <div style={{ display: tab === "chat" ? "block" : "none" }}>
-        <ChatPanel />
+        <ChatPanel key={user.toLowerCase()} username={user} />
       </div>
       <div style={{ display: tab === "summarize" ? "block" : "none" }}>
         <SummarizePanel />

@@ -10,6 +10,13 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+try:
+    import psycopg
+except ImportError:
+    DATABASE_ERRORS = (sqlite3.Error,)
+else:
+    DATABASE_ERRORS = (sqlite3.Error, psycopg.Error)
+
 
 SESSION_SECONDS = 12 * 60 * 60
 PASSWORD_ITERATIONS = 600_000
@@ -80,6 +87,10 @@ def ensure_users_table(conn, postgres):
             "username TEXT NOT NULL, username_key TEXT NOT NULL UNIQUE, "
             "password_hash TEXT NOT NULL)"
         )
+
+def database_ready():
+    with connection() as (conn, _):
+        return conn.execute("SELECT 1").fetchone()[0] == 1
 
 
 def hash_password(password):

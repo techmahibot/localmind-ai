@@ -15,13 +15,14 @@ from pypdf import PdfReader
 from summarizer import summarize_document
 from llm import ModelConfigurationError, ask, model_name, open_stream, reachable, stream_content
 from auth import (
-    AuthConfigurationError, UsernameTaken, SESSION_SECONDS, create_session,
-    find_user, find_user_by_id, register, session_secret, session_user_id,
+    AuthConfigurationError, DATABASE_ERRORS, UsernameTaken, SESSION_SECONDS, create_session,
+    database_ready, find_user, find_user_by_id, register, session_secret, session_user_id,
     verify_password,
 )
 
 MAX_HISTORY_MESSAGES = 20  # keep the prompt small so a 3B model stays fast
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB
+MAX_MESSAGE_CHARS = 12000
 SESSION_COOKIE = "localmind_session"
 
 SYSTEM_PROMPT = (
@@ -82,6 +83,8 @@ async def signup(credentials: LoginRequest, response: Response):
         raise HTTPException(400, str(exc))
     except UsernameTaken:
         raise HTTPException(409, "This username is already taken.")
+    except DATABASE_ERRORS:
+        raise HTTPException(503, "Account storage is temporarily unavailable.")
     return {"username": username}
 
 
@@ -92,6 +95,8 @@ async def login(credentials: LoginRequest, response: Response):
         user = find_user(credentials.username)
     except AuthConfigurationError as exc:
         raise HTTPException(503, str(exc))
+    except DATABASE_ERRORS:
+        raise HTTPException(503, "Account storage is temporarily unavailable.")
     if not user or not verify_password(credentials.password, user[2]):
         raise HTTPException(401, "Incorrect username or password.")
     set_session(response, user[0])
@@ -104,6 +109,8 @@ async def current_user(request: Request):
         user = find_user_by_id(request.state.user_id)
     except AuthConfigurationError as exc:
         raise HTTPException(503, str(exc))
+    except DATABASE_ERRORS:
+        raise HTTPException(503, "Account storage is temporarily unavailable.")
     if user is None:
         raise HTTPException(401, "Please sign in to continue.")
     return {"username": user[1]}
@@ -121,14 +128,14 @@ class HistoryMessage(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    message: str = Field(min_length=1)
+    message: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
     # The browser sends the earlier turns, so the server stays stateless and
     # every LAN user gets their own separate conversation.
-    history: List[HistoryMessage] = []
+    history: List[HistoryMessage] = Field(default_factory=list, max_length=100)
 
 class GrammarRequest(BaseModel):
-    text: str
-    task: str = "grammar"
+    text: str = Field(min_length=1, max_length=48000)
+    task: Literal["grammar", "formal", "simple", "concise", "reformat"] = "grammar"
 
 class SummarizeRequest(BaseModel):
     text: str = Field(min_length=1)
@@ -170,13 +177,18 @@ async def health():
         config_error = str(exc)
     except httpx.HTTPError:
         pass
+    storage_ok = False
+    try:
+        storage_ok = database_ready()
+    except (AuthConfigurationError, *DATABASE_ERRORS, OSError):
+        pass
     return {
         "status": "LocalMind AI backend is running",
         "model_server": "reachable" if model_ok else "unavailable",
         "model": model_name(),
         "configuration_error": config_error,
-        "account_storage": "configured" if (os.environ.get("DATABASE_URL") or not os.environ.get("VERCEL")) else "unavailable",
-        "login_configured": bool((os.environ.get("DATABASE_URL") or not os.environ.get("VERCEL")) and
+        "account_storage": "reachable" if storage_ok else "unavailable",
+        "login_configured": bool(storage_ok and
                                  (os.environ.get("LOCALMIND_SESSION_SECRET") or not os.environ.get("VERCEL"))),
     }
 
@@ -186,17 +198,22 @@ async def _chat(request: ChatRequest) -> str:
 
 
 def build_messages(request: ChatRequest):
-    history = [m.model_dump() for m in request.history][-MAX_HISTORY_MESSAGES:]
+    history = [
+        {"role": m.role, "content": m.content[:MAX_MESSAGE_CHARS]}
+        for m in request.history[-MAX_HISTORY_MESSAGES:]
+    ]
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
         *history,
-        {"role": "user", "content": request.message},
+        {"role": "user", "content": request.message.strip()},
     ]
 
 
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
     """Non-streaming chat: returns the whole reply at once."""
+    if not request.message.strip():
+        raise HTTPException(422, "Message cannot be blank.")
     reply = await call_model_errors(_chat(request))
     return {"reply": reply}
 
@@ -204,11 +221,14 @@ async def chat(request: ChatRequest):
 @app.post("/api/chat/stream")
 async def chat_stream(request: ChatRequest):
     """Streaming chat: sends the reply piece by piece as the model produces it."""
+    if not request.message.strip():
+        raise HTTPException(422, "Message cannot be blank.")
     client, response = await call_model_errors(
         open_stream(build_messages(request))
     )
 
     async def pieces():
+        finished = False
         try:
             async for line in response.aiter_lines():
                 if not line:
@@ -220,7 +240,10 @@ async def chat_stream(request: ChatRequest):
                 if text:
                     yield text
                 if done:
+                    finished = True
                     break
+            if not finished:
+                yield "\n\n[The model stream ended unexpectedly.]"
         except httpx.HTTPError:
             yield "\n\n[The connection to the model was lost.]"
         finally:
@@ -236,6 +259,8 @@ async def chat_stream(request: ChatRequest):
 
 @app.post("/api/summarize")
 async def summarize(request: SummarizeRequest):
+    if not request.text.strip():
+        raise HTTPException(422, "Text cannot be blank.")
     return await call_model_errors(summarize_document(request.text, request.length))
 
 
@@ -252,7 +277,10 @@ def extract_text(filename: str, data: bytes) -> str:
                 detail="Could not read that PDF. It may be damaged or password protected.",
             )
     elif name.endswith((".txt", ".md")):
-        text = data.decode("utf-8", errors="ignore")
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            raise HTTPException(422, "Text files must be UTF-8 encoded.")
     else:
         raise HTTPException(
             status_code=415,
@@ -283,6 +311,8 @@ async def summarize_file(
 
 @app.post("/api/improve-text")
 async def improve(request: GrammarRequest):
+    if not request.text.strip():
+        raise HTTPException(422, "Text cannot be blank.")
     improved = await call_model_errors(
         improve_text(request.text, request.task)
     )
