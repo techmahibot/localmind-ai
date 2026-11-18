@@ -78,7 +78,11 @@ function AuthPage({ onLogin }) {
 // Turns a failed HTTP response into a readable Error message.
 async function errorFromResponse(res) {
   const data = await res.json().catch(() => ({}));
-  const detail = typeof data.detail === "string" ? data.detail : "Something went wrong.";
+  const detail = typeof data.detail === "string"
+    ? data.detail
+    : Array.isArray(data.detail)
+      ? data.detail.map((issue) => issue.msg).filter(Boolean).join(" ") || "Invalid input."
+      : "Something went wrong.";
   if (res.status === 401 && detail === "Please sign in to continue.") {
     window.dispatchEvent(new Event("localmind-session-expired"));
   }

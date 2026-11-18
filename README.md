@@ -170,6 +170,9 @@ The host computer performs local model inference and serves responses to connect
 
 ## Testing
 
+See [API contract](docs/api.md) for route examples, authentication, response shapes,
+error statuses, and the backend test command.
+
 The application should be tested for:
 
 - Local LLM execution
