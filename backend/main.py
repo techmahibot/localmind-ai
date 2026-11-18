@@ -13,7 +13,7 @@ from grammer import improve_text
 from pypdf import PdfReader
 
 from summarizer import summarize_document
-from llm import ModelConfigurationError, ask, model_name, open_stream, reachable, stream_content
+from llm import ModelConfigurationError, ModelResponseError, ask, model_name, open_stream, reachable, stream_content
 from auth import (
     AuthConfigurationError, DATABASE_ERRORS, UsernameTaken, SESSION_SECONDS, create_session,
     database_ready, find_user, find_user_by_id, register, session_secret, session_user_id,
@@ -148,6 +148,8 @@ async def call_model_errors(coro):
         return await coro
     except ModelConfigurationError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
+    except ModelResponseError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
     except httpx.ConnectError:
         raise HTTPException(
             status_code=503,

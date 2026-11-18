@@ -14,6 +14,10 @@ class ModelConfigurationError(Exception):
     pass
 
 
+class ModelResponseError(Exception):
+    pass
+
+
 def provider():
     value = os.getenv("LLM_PROVIDER", "ollama").lower()
     if value not in ("ollama", "openai"):
@@ -56,9 +60,16 @@ def payload(messages, stream=False, options=None):
 
 
 def reply_content(data):
-    if provider() == "ollama":
-        return data["message"]["content"]
-    return data["choices"][0]["message"]["content"]
+    try:
+        if provider() == "ollama":
+            content = data["message"]["content"]
+        else:
+            content = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise ModelResponseError("The model returned an unexpected response.") from exc
+    if not isinstance(content, str):
+        raise ModelResponseError("The model returned an unexpected response.")
+    return content
 
 
 def stream_content(line):
@@ -79,7 +90,10 @@ async def ask(messages, options=None):
     async with httpx.AsyncClient(timeout=180.0) as client:
         response = await client.post(url, headers=headers, json=payload(messages, options=options))
         response.raise_for_status()
-        return reply_content(response.json())
+        try:
+            return reply_content(response.json())
+        except ValueError as exc:
+            raise ModelResponseError("The model returned invalid JSON.") from exc
 
 
 async def open_stream(messages):

@@ -16,6 +16,13 @@ class ModelTransportTests(unittest.TestCase):
             self.assertEqual((kind, url, headers), ("ollama", "http://127.0.0.1:11434/api/chat", {}))
             self.assertEqual(llm.reply_content({"message": {"content": "Hello"}}), "Hello")
             self.assertEqual(llm.stream_content('{"message":{"content":"Hi"},"done":false}'), ("Hi", False))
+            with self.assertRaises(llm.ModelResponseError):
+                llm.reply_content({"message": {"content": None}})
+
+    def test_malformed_hosted_reply_is_reported(self):
+        with patch.dict(os.environ, {"LLM_PROVIDER": "openai"}, clear=True):
+            with self.assertRaises(llm.ModelResponseError):
+                llm.reply_content({"choices": []})
 
     def test_vercel_requires_reachable_model(self):
         with patch.dict(os.environ, {"VERCEL": "1"}, clear=True):
