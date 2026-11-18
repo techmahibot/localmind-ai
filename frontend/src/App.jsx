@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { Children, createContext, isValidElement, useCallback, useContext, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import "./App.css";
 
@@ -187,6 +187,14 @@ function describeStreamError(e) {
   return e.message;
 }
 
+// Plain text of a rendered markdown node (used by the "Copy code" button).
+function nodeText(node) {
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(nodeText).join("");
+  if (isValidElement(node)) return nodeText(node.props.children);
+  return "";
+}
+
 function dropEmptyAssistant(messages) {
   const last = messages[messages.length - 1];
   return last && last.role === "assistant" && last.content === "" ? messages.slice(0, -1) : messages;
@@ -263,6 +271,73 @@ function Logo() {
 // ---------------------------------------------------------------------------
 // Shared pieces
 // ---------------------------------------------------------------------------
+
+// Keeps the newest text in view while a reply streams, but stops following as soon as the
+// reader scrolls up. A "Jump to latest" button brings them back.
+function useAutoScroll(deps) {
+  const ref = useRef(null);
+  const stuck = useRef(true);
+  const [away, setAway] = useState(false);
+
+  function onScroll() {
+    const el = ref.current;
+    if (!el) return;
+    const near = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    stuck.current = near;
+    setAway(!near);
+  }
+
+  useEffect(() => {
+    const el = ref.current;
+    if (el && stuck.current) el.scrollTop = el.scrollHeight;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
+
+  function jump() {
+    const el = ref.current;
+    if (!el) return;
+    stuck.current = true;
+    setAway(false);
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  }
+
+  return { ref, onScroll, away, jump };
+}
+
+function JumpButton({ show, onClick }) {
+  if (!show) return null;
+  return (
+    <button className="jump" onClick={onClick}>
+      <Icon name="send" size={14} />
+      Jump to latest
+    </button>
+  );
+}
+
+// A short message with an Undo button, used after clearing a conversation.
+function UndoToast({ text, onUndo, onDismiss }) {
+  useEffect(() => {
+    const timer = setTimeout(onDismiss, 8000);
+    return () => clearTimeout(timer);
+  }, [onDismiss]);
+  return (
+    <div className="toast" role="status">
+      <span>{text}</span>
+      <button onClick={onUndo}>Undo</button>
+    </div>
+  );
+}
+
+function CodeBlock({ children }) {
+  return (
+    <div className="codeblock">
+      <CopyButton text={nodeText(children).replace(/\n$/, "")} label="Copy code" />
+      <pre>{children}</pre>
+    </div>
+  );
+}
+
+const MARKDOWN_COMPONENTS = { pre: CodeBlock };
 
 // Lets any panel tell the sidebar light that the model is working.
 const BusyContext = createContext(() => () => {});
@@ -463,7 +538,7 @@ function Message({ message, streaming }) {
         ) : (
           <>
             <div className="markdown">
-              <ReactMarkdown>{message.content}</ReactMarkdown>
+              <ReactMarkdown components={MARKDOWN_COMPONENTS}>{message.content}</ReactMarkdown>
             </div>
             {!streaming && message.sources?.length > 0 && (
               <details className="sources">
@@ -543,8 +618,10 @@ function ChatPanel({ username }) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const bottomRef = useRef(null);
+  const [cleared, setCleared] = useState(null);
   const abortRef = useRef(null);
+  const scroll = useAutoScroll([messages, loading]);
+  const dismissCleared = useCallback(() => setCleared(null), []);
 
   useEffect(() => {
     try {
@@ -552,15 +629,23 @@ function ChatPanel({ username }) {
     } catch {
       /* storage unavailable, ignore */
     }
-    bottomRef.current?.scrollIntoView({ behavior: "auto" });
-  }, [messages, loading, username]);
+  }, [messages, username]);
 
-  async function send(override) {
-    const text = (override ?? input).trim();
+  function send(override) {
+    run((override ?? input).trim(), messages);
+  }
+
+  function regenerate() {
+    const last = messages.map((m) => m.role).lastIndexOf("user");
+    if (last < 0 || loading) return;
+    run(messages[last].content, messages.slice(0, last));
+  }
+
+  async function run(text, history) {
     if (!text || loading) return;
-    const history = messages;
     // Add the user's message and an empty assistant message that fills up as text streams in.
     setMessages([...history, { role: "user", content: text }, { role: "assistant", content: "" }]);
+    setCleared(null);
     setInput("");
     setError("");
     setLoading(true);
@@ -604,6 +689,7 @@ function ChatPanel({ username }) {
         <button
           className="btn ghost small"
           onClick={() => {
+            setCleared(messages);
             setMessages([]);
             setError("");
           }}
@@ -614,7 +700,7 @@ function ChatPanel({ username }) {
         </button>
       </ViewHead>
       <section className="panel">
-        <div className="messages">
+        <div className="messages" ref={scroll.ref} onScroll={scroll.onScroll} role="log" aria-live="polite" aria-label="Conversation">
           {messages.length === 0 && (
             <div className="hero">
               <h3>Ask anything. Nothing leaves this network.</h3>
@@ -638,8 +724,25 @@ function ChatPanel({ username }) {
               streaming={loading && i === messages.length - 1 && m.role === "assistant"}
             />
           ))}
-          <div ref={bottomRef} />
+          {!loading && messages.length > 0 && messages[messages.length - 1].role === "assistant" && (
+            <div className="regen-row">
+              <button className="btn small ghost" onClick={regenerate}>
+                Regenerate
+              </button>
+            </div>
+          )}
         </div>
+        <JumpButton show={scroll.away} onClick={scroll.jump} />
+        {cleared && (
+          <UndoToast
+            text="Chat cleared."
+            onDismiss={dismissCleared}
+            onUndo={() => {
+              setMessages(cleared);
+              setCleared(null);
+            }}
+          />
+        )}
         {error && (
           <div className="error" role="alert">
             {error}
@@ -671,9 +774,11 @@ function DocumentsPanel({ username }) {
   const [uploading, setUploading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const bottomRef = useRef(null);
+  const [cleared, setCleared] = useState(null);
   const abortRef = useRef(null);
   const fileInputRef = useRef(null);
+  const scroll = useAutoScroll([messages, loading]);
+  const dismissCleared = useCallback(() => setCleared(null), []);
 
   useEffect(() => {
     try {
@@ -681,8 +786,7 @@ function DocumentsPanel({ username }) {
     } catch {
       /* storage unavailable, ignore */
     }
-    bottomRef.current?.scrollIntoView({ behavior: "auto" });
-  }, [doc, messages, loading, username]);
+  }, [doc, messages, username]);
 
   async function upload(file) {
     if (!file) return;
@@ -708,6 +812,7 @@ function DocumentsPanel({ username }) {
     const question = (override ?? input).trim();
     if (!question || loading || !doc) return;
     const history = messages.map(({ role, content }) => ({ role, content }));
+    setCleared(null);
     setMessages([
       ...messages,
       { role: "user", content: question },
@@ -786,6 +891,7 @@ function DocumentsPanel({ username }) {
         <button
           className="btn ghost small"
           onClick={() => {
+            setCleared(messages);
             setMessages([]);
             setError("");
           }}
@@ -820,7 +926,7 @@ function DocumentsPanel({ username }) {
           </div>
         </div>
 
-        <div className="messages">
+        <div className="messages" ref={scroll.ref} onScroll={scroll.onScroll} role="log" aria-live="polite" aria-label="Conversation">
           {messages.length === 0 && (
             <div className="hero">
               <h3>What do you want to know?</h3>
@@ -843,8 +949,18 @@ function DocumentsPanel({ username }) {
               streaming={loading && i === messages.length - 1 && m.role === "assistant"}
             />
           ))}
-          <div ref={bottomRef} />
         </div>
+        <JumpButton show={scroll.away} onClick={scroll.jump} />
+        {cleared && (
+          <UndoToast
+            text="Conversation cleared."
+            onDismiss={dismissCleared}
+            onUndo={() => {
+              setMessages(cleared);
+              setCleared(null);
+            }}
+          />
+        )}
         {error && (
           <div className="error" role="alert">
             {error}
@@ -975,6 +1091,7 @@ function ImprovePanel() {
   const [file, setFile] = useState(null);
   const [task, setTask] = useState("grammar");
   const [result, setResult] = useState(null);
+  const [view, setView] = useState("improved");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const fileInputRef = useRef(null);
@@ -989,6 +1106,7 @@ function ImprovePanel() {
     setLoading(true);
     setError("");
     setResult(null);
+    setView("improved");
     const done = begin();
     try {
       let data;
@@ -999,6 +1117,7 @@ function ImprovePanel() {
         data = await postForm("/api/improve-text/file", form);
       } else {
         data = await postJson("/api/improve-text/long", { text, task });
+        data = { ...data, original: text };
       }
       setResult(data);
     } catch (e) {
@@ -1069,7 +1188,38 @@ function ImprovePanel() {
                 </button>
               </div>
             </div>
-            <div className="result">{result.improved_text}</div>
+            {result.original && (
+              <div className="segmented" role="group" aria-label="View">
+                <button
+                  className={view === "improved" ? "on" : ""}
+                  aria-pressed={view === "improved"}
+                  onClick={() => setView("improved")}
+                >
+                  Improved
+                </button>
+                <button
+                  className={view === "compare" ? "on" : ""}
+                  aria-pressed={view === "compare"}
+                  onClick={() => setView("compare")}
+                >
+                  Compare
+                </button>
+              </div>
+            )}
+            {view === "compare" && result.original ? (
+              <div className="compare">
+                <div>
+                  <h4>Original</h4>
+                  <div className="result">{result.original}</div>
+                </div>
+                <div>
+                  <h4>Improved</h4>
+                  <div className="result">{result.improved_text}</div>
+                </div>
+              </div>
+            ) : (
+              <div className="result">{result.improved_text}</div>
+            )}
             <p className="meta">{improveNote(result)}</p>
           </div>
         )}
@@ -1089,11 +1239,12 @@ const TABS = [
   { id: "improve", label: "Improve text", icon: "pencil", Panel: ImprovePanel },
 ];
 
-function AuthPage({ onLogin }) {
+function AuthPage({ onLogin, notice }) {
   const [mode, setMode] = useState("login");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const signup = mode === "signup";
@@ -1141,6 +1292,11 @@ function AuthPage({ onLogin }) {
             ? "Choose a username and password to get started."
             : "Log in to continue to your AI assistant."}
         </p>
+        {notice && (
+          <div className="notice" role="status">
+            {notice}
+          </div>
+        )}
         <label htmlFor="username">Username</label>
         <input
           id="username"
@@ -1154,22 +1310,32 @@ function AuthPage({ onLogin }) {
         />
         {signup && <small className="field-hint">3 to 30 letters, numbers or underscores</small>}
         <label htmlFor="password">Password</label>
-        <input
-          id="password"
-          type="password"
-          autoComplete={signup ? "new-password" : "current-password"}
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          minLength={signup ? 10 : undefined}
-          required
-        />
+        <div className="password-field">
+          <input
+            id="password"
+            type={showPassword ? "text" : "password"}
+            autoComplete={signup ? "new-password" : "current-password"}
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            minLength={signup ? 10 : undefined}
+            required
+          />
+          <button
+            type="button"
+            className="show-password"
+            onClick={() => setShowPassword((v) => !v)}
+            aria-pressed={showPassword}
+          >
+            {showPassword ? "Hide" : "Show"}
+          </button>
+        </div>
         {signup && (
           <>
             <small className="field-hint">At least 10 characters</small>
             <label htmlFor="confirm-password">Confirm password</label>
             <input
               id="confirm-password"
-              type="password"
+              type={showPassword ? "text" : "password"}
               autoComplete="new-password"
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
@@ -1213,6 +1379,7 @@ function Account({ username, onLogout }) {
 export default function App() {
   const [user, setUser] = useState(null);
   const [checking, setChecking] = useState(true);
+  const [notice, setNotice] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -1233,7 +1400,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const expired = () => setUser(null);
+    const expired = () => {
+      setNotice("Your session ended. Please sign in again.");
+      setUser(null);
+    };
     window.addEventListener("localmind-session-expired", expired);
     return () => window.removeEventListener("localmind-session-expired", expired);
   }, []);
@@ -1244,11 +1414,21 @@ export default function App() {
     } catch {
       /* the cookie may already be gone; sign out on screen anyway */
     }
+    setNotice("");
     setUser(null);
   }
 
   if (checking) return <div className="session-check">Checking session</div>;
-  if (!user) return <AuthPage onLogin={setUser} />;
+  if (!user)
+    return (
+      <AuthPage
+        notice={notice}
+        onLogin={(name) => {
+          setNotice("");
+          setUser(name);
+        }}
+      />
+    );
   return <Workspace username={user} onLogout={logout} />;
 }
 
@@ -1271,6 +1451,9 @@ function Workspace({ username, onLogout }) {
   return (
     <BusyContext.Provider value={begin}>
       <div className="shell">
+        <a className="skip-link" href="#main">
+          Skip to content
+        </a>
         <aside className="sidebar">
           <div className="brand">
             <Logo />
@@ -1297,7 +1480,7 @@ function Workspace({ username, onLogout }) {
             <Account username={username} onLogout={onLogout} />
           </div>
         </aside>
-        <main className="main">
+        <main className="main" id="main" tabIndex={-1}>
           {/* All panels stay mounted so switching tabs keeps your work. */}
           {TABS.map(({ id, Panel }) => (
             <div key={id} className={`view${tab === id ? " active" : ""}`}>

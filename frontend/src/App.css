@@ -1037,3 +1037,226 @@ button.link {
     padding: 24px;
   }
 }
+
+/* ================= Polish pass ================= */
+
+/* Skip link: only visible when focused with the keyboard */
+.skip-link {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: 50;
+  padding: 8px 14px;
+  border-radius: 10px;
+  background: var(--primary);
+  color: var(--primary-ink);
+  font-weight: 600;
+  text-decoration: none;
+  transform: translateY(-200%);
+}
+.skip-link:focus {
+  transform: none;
+}
+.main:focus {
+  outline: none;
+}
+
+/* Jump to latest */
+.panel {
+  position: relative;
+}
+.jump {
+  position: absolute;
+  left: 50%;
+  bottom: 118px;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.85rem;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(194, 37, 92, 0.15);
+}
+.jump svg {
+  transform: rotate(180deg);
+}
+.jump:hover {
+  background: var(--hover);
+}
+
+/* Undo toast */
+.toast {
+  position: absolute;
+  left: 50%;
+  bottom: 118px;
+  transform: translateX(-50%);
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 8px 8px 16px;
+  border-radius: 12px;
+  background: var(--text);
+  color: #fff;
+  font-size: 0.9rem;
+  box-shadow: 0 10px 28px rgba(59, 31, 43, 0.25);
+}
+.toast button {
+  padding: 4px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--user-bg);
+  color: var(--text);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* Code blocks with a copy button */
+.codeblock {
+  position: relative;
+  margin: 0 0 12px;
+}
+.codeblock pre {
+  margin: 0;
+  padding-top: 38px;
+}
+.codeblock .copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 1;
+}
+
+/* Password field with Show / Hide */
+.password-field {
+  position: relative;
+  display: flex;
+}
+.password-field input {
+  flex: 1;
+  padding-right: 64px;
+}
+.show-password {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.show-password:hover {
+  background: var(--accent-soft);
+}
+.notice {
+  margin-bottom: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--side);
+  font-size: 0.9rem;
+}
+
+/* Improve: Improved / Compare switch */
+.segmented {
+  display: inline-flex;
+  margin: 4px 0 10px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--side);
+}
+.segmented button {
+  padding: 4px 14px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--muted);
+  font-weight: 500;
+  cursor: pointer;
+}
+.segmented button.on {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 1px 3px rgba(194, 37, 92, 0.15);
+}
+.compare {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+.compare h4 {
+  margin: 0 0 6px;
+  font-size: 0.9rem;
+  color: var(--muted);
+  font-weight: 500;
+}
+.compare .result {
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+/* Tablet: sidebar shrinks to an icon rail */
+@media (min-width: 761px) and (max-width: 1000px) {
+  .shell {
+    grid-template-columns: 72px minmax(0, 1fr);
+  }
+  .sidebar {
+    align-items: center;
+    padding: 18px 8px 12px;
+  }
+  .brand-name,
+  .status-text,
+  .status-model,
+  .nav button span,
+  .network,
+  .account-name {
+    display: none;
+  }
+  .brand {
+    padding: 0;
+  }
+  .status {
+    padding: 0;
+  }
+  .nav button {
+    justify-content: center;
+    padding: 10px;
+  }
+  .account {
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 4px;
+  }
+  .account .link {
+    font-size: 11px;
+  }
+  .view-inner {
+    padding: 0 24px;
+  }
+}
+
+@media (max-width: 760px) {
+  .compare {
+    grid-template-columns: 1fr;
+  }
+  .jump,
+  .toast {
+    bottom: 104px;
+  }
+}
+
+/* Regenerate sits right under the reply's Copy button */
+.regen-row {
+  margin-top: -14px;
+}
