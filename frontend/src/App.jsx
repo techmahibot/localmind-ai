@@ -259,13 +259,43 @@ function Icon({ name, size = 18 }) {
   );
 }
 
-function Logo() {
+// Original vector art used for decoration. Colours come from CSS variables so they follow the theme.
+function Bow({ size = 32, className = "" }) {
   return (
-    <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true">
-      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeWidth="2" />
-      <circle cx="12" cy="12" r="3.6" fill="var(--accent)" />
+    <svg className={`bow ${className}`} viewBox="0 0 48 34" width={size} height={size * (34 / 48)} aria-hidden="true">
+      <path className="bow-tail" d="M21.5 19 L13 32.5 L20 29.5 L24 21 Z" />
+      <path className="bow-tail" d="M26.5 19 L35 32.5 L28 29.5 L24 21 Z" />
+      <path className="bow-loop" d="M24 16 C14 1 1.5 3.5 2.5 14 C3.5 26 16 25 24 16 Z" />
+      <path className="bow-loop" d="M24 16 C34 1 46.5 3.5 45.5 14 C44.5 26 32 25 24 16 Z" />
+      <path className="bow-fold" d="M22 15.5 C16 9 9 9 7 12.5 M26 15.5 C32 9 39 9 41 12.5" />
+      <ellipse className="bow-knot" cx="24" cy="16.5" rx="4.6" ry="5.4" />
     </svg>
   );
+}
+
+function Cherries({ size = 64, className = "" }) {
+  return (
+    <svg className={`cherries ${className}`} viewBox="0 0 64 64" width={size} height={size} aria-hidden="true">
+      <path className="cherry-stem" d="M21 41 C22 24 30 12 42 5 M43 44 C42 28 42 16 42 5" />
+      <path className="cherry-leaf" d="M42 5 C50 2 58 6 60 12 C52 14 45 11 42 5 Z" />
+      <circle className="cherry-fruit" cx="20" cy="46" r="13" />
+      <circle className="cherry-fruit" cx="44" cy="48" r="12" />
+      <ellipse className="cherry-shine" cx="15.5" cy="41" rx="3.4" ry="2.2" transform="rotate(-30 15.5 41)" />
+      <ellipse className="cherry-shine" cx="40" cy="43.5" rx="3" ry="2" transform="rotate(-30 40 43.5)" />
+    </svg>
+  );
+}
+
+function Sparkle({ size = 18, className = "" }) {
+  return (
+    <svg className={`sparkle ${className}`} viewBox="0 0 24 24" width={size} height={size} aria-hidden="true">
+      <path d="M12 1.5 C12.6 8 16 11.4 22.5 12 C16 12.6 12.6 16 12 22.5 C11.4 16 8 12.6 1.5 12 C8 11.4 11.4 8 12 1.5 Z" />
+    </svg>
+  );
+}
+
+function Logo() {
+  return <Bow size={40} />;
 }
 
 // ---------------------------------------------------------------------------
@@ -277,6 +307,7 @@ function Logo() {
 function useAutoScroll(deps) {
   const ref = useRef(null);
   const stuck = useRef(true);
+  const lastTop = useRef(0); // where we last scrolled to ourselves
   const [away, setAway] = useState(false);
 
   function onScroll() {
@@ -284,12 +315,30 @@ function useAutoScroll(deps) {
     if (!el) return;
     const near = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
     stuck.current = near;
+    if (near) lastTop.current = el.scrollTop;
     setAway(!near);
   }
 
   useEffect(() => {
     const el = ref.current;
-    if (el && stuck.current) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    if (el.scrollHeight <= el.clientHeight + 1) {
+      // Nothing to scroll (for example after clearing the chat): start fresh.
+      stuck.current = true;
+      lastTop.current = 0;
+      setAway(false);
+      return;
+    }
+    if (!stuck.current) return;
+    if (el.scrollTop < lastTop.current - 4) {
+      // The reader moved up since we last scrolled, so stop following. Checking the real
+      // position here avoids a race with the scroll event.
+      stuck.current = false;
+      setAway(true);
+      return;
+    }
+    el.scrollTop = el.scrollHeight;
+    lastTop.current = el.scrollTop;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
 
@@ -298,7 +347,9 @@ function useAutoScroll(deps) {
     if (!el) return;
     stuck.current = true;
     setAway(false);
-    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    // Instant, not smooth: a smooth scroll passes through "not near the bottom" and would cancel following.
+    el.scrollTop = el.scrollHeight;
+    lastTop.current = el.scrollTop;
   }
 
   return { ref, onScroll, away, jump };
@@ -532,6 +583,9 @@ function Message({ message, streaming }) {
   const waiting = streaming && message.content === "";
   return (
     <div className={`msg assistant${streaming ? " streaming" : ""}`}>
+      <span className="bot-avatar" aria-hidden="true">
+        <Bow size={22} />
+      </span>
       <div className="bubble assistant">
         {waiting ? (
           <p className="thinking">Thinking</p>
@@ -703,10 +757,10 @@ function ChatPanel({ username }) {
         <div className="messages" ref={scroll.ref} onScroll={scroll.onScroll} role="log" aria-live="polite" aria-label="Conversation">
           {messages.length === 0 && (
             <div className="hero">
-              <h3>Ask anything. Nothing leaves this network.</h3>
+              <Bow size={84} className="hero-bow" />
+              <h3>Hi {username}, what can I do for you today?</h3>
               <p>
-                The model runs on the computer hosting this page. Start with one of these, or write
-                your own.
+                Everything stays on this network. Start with one of these, or write your own.
               </p>
               <ul className="starters">
                 {CHAT_STARTERS.map((q) => (
@@ -929,6 +983,7 @@ function DocumentsPanel({ username }) {
         <div className="messages" ref={scroll.ref} onScroll={scroll.onScroll} role="log" aria-live="polite" aria-label="Conversation">
           {messages.length === 0 && (
             <div className="hero">
+              <Bow size={84} className="hero-bow" />
               <h3>What do you want to know?</h3>
               <p>Ask in your own words. Try one of these to start.</p>
               <ul className="starters">
@@ -1282,9 +1337,17 @@ function AuthPage({ onLogin, notice }) {
 
   return (
     <main className="login-page">
+      <div className="login-decor" aria-hidden="true">
+        <Sparkle size={26} className="s1" />
+        <Sparkle size={16} className="s2" />
+        <Sparkle size={22} className="s3" />
+        <Sparkle size={14} className="s4" />
+        <Cherries size={96} className="c1" />
+        <Cherries size={64} className="c2" />
+      </div>
       <form className="login-card" onSubmit={submit}>
         <div className="login-logo">
-          <Logo />
+          <Bow size={72} />
         </div>
         <h1>{signup ? "Create your account" : "Welcome to LocalMind AI"}</h1>
         <p>
