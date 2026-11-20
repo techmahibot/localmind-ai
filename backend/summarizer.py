@@ -55,18 +55,20 @@ def split_text(text: str, size: int = CHUNK_CHARS):
     return chunks
 
 
-async def _ask(instruction: str, text: str) -> str:
+async def _ask(instruction: str, text: str, model: str = "") -> str:
     return await ask(
         [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": f"{instruction}\n\nText:\n{text}"},
         ],
         options={"num_ctx": NUM_CTX},
+        selected_model=model or None,
     )
 
 
 async def summarize_document(
-    text: str, length: str = "medium", mode: str = "general", topic: str = ""
+    text: str, length: str = "medium", mode: str = "general", topic: str = "",
+    model: str = ""
 ) -> dict:
     """Summarize text of any length. Returns summary, number of sections and a truncated flag."""
     if mode not in MODE_PROMPTS:
@@ -81,7 +83,7 @@ async def summarize_document(
     chunks = chunks[:MAX_CHUNKS]
 
     if len(chunks) == 1:
-        summary = await _ask(instruction, chunks[0])
+        summary = await _ask(instruction, chunks[0], model)
     else:
         partials = []
         for i, chunk in enumerate(chunks, start=1):
@@ -91,9 +93,10 @@ async def summarize_document(
                     "Summarize it in at most 150 words, keeping key facts and numbers. "
                     + MODE_PROMPTS[mode] + focus,
                     chunk,
+                    model,
                 )
             )
-        summary = await _ask(instruction, "\n\n".join(partials))
+        summary = await _ask(instruction, "\n\n".join(partials), model)
 
     return {"summary": summary, "chunks": len(chunks), "truncated": truncated}
 

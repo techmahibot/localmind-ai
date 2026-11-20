@@ -24,6 +24,27 @@ class ModelTransportTests(unittest.TestCase):
             with self.assertRaises(llm.ModelResponseError):
                 llm.reply_content({"choices": []})
 
+    def test_model_selection_is_limited_to_available_models(self):
+        async def check():
+            with patch.object(llm, "available_models", return_value=["qwen2.5:3b", "llama3.2:3b"]):
+                self.assertEqual(await llm.resolve_model("llama3.2:3b"), "llama3.2:3b")
+                with self.assertRaises(llm.ModelConfigurationError):
+                    await llm.resolve_model("not-installed")
+        asyncio.run(check())
+
+    def test_local_model_list_excludes_embedding_models(self):
+        original_client = httpx.AsyncClient
+        transport = httpx.MockTransport(lambda request: httpx.Response(200, json={
+            "models": [
+                {"name": "qwen2.5:3b", "capabilities": ["completion"]},
+                {"name": "embed:latest", "capabilities": ["embedding"]},
+            ]
+        }))
+        with patch.dict(os.environ, {"LLM_PROVIDER": "ollama"}, clear=True), \
+             patch.object(llm.httpx, "AsyncClient",
+                          side_effect=lambda *a, **kw: original_client(transport=transport, **kw)):
+            self.assertEqual(asyncio.run(llm.available_models()), ["qwen2.5:3b"])
+
     def test_vercel_requires_reachable_model(self):
         with patch.dict(os.environ, {"VERCEL": "1"}, clear=True):
             with self.assertRaises(llm.ModelConfigurationError):

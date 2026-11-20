@@ -688,6 +688,28 @@ button.link {
   margin-top: 6px;
 }
 
+.model-toolbar {
+  width: 100%;
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 10px 28px 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.model-toolbar select {
+  min-width: 0;
+  max-width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+}
+
 .hint {
   margin: 12px 0 0;
   color: var(--muted);

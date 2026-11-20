@@ -12,7 +12,8 @@ from grammer import improve_text
 from documents import extract_text, router as documents_router
 
 from summarizer import summarize_document
-from llm import ModelConfigurationError, ModelResponseError, ask, model_name, open_stream, reachable, stream_content
+from llm import (ModelConfigurationError, ModelResponseError, ask, available_models,
+                 model_name, open_stream, reachable, resolve_model, stream_content)
 from auth import (
     AuthConfigurationError, DATABASE_ERRORS, UsernameTaken, SESSION_SECONDS, create_session,
     database_ready, find_user, find_user_by_id, register, session_secret, session_user_id,
@@ -131,6 +132,7 @@ class HistoryMessage(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
+    model: str = Field(default="", max_length=120)
     # The browser sends the earlier turns, so the server stays stateless and
     # every LAN user gets their own separate conversation.
     history: List[HistoryMessage] = Field(default_factory=list, max_length=100)
@@ -138,12 +140,14 @@ class ChatRequest(BaseModel):
 class GrammarRequest(BaseModel):
     text: str = Field(min_length=1, max_length=48000)
     task: Literal["grammar", "formal", "simple", "concise", "reformat"] = "grammar"
+    model: str = Field(default="", max_length=120)
 
 class SummarizeRequest(BaseModel):
     text: str = Field(min_length=1)
     length: Literal["short", "medium", "detailed"] = "medium"
     mode: Literal["general", "science", "news"] = "general"
     topic: str = Field(default="", max_length=120)
+    model: str = Field(default="", max_length=120)
 
 
 async def call_model_errors(coro):
@@ -201,8 +205,15 @@ async def health():
     }
 
 
+@app.get("/api/models")
+async def models():
+    names = await call_model_errors(available_models())
+    return {"models": names, "default": model_name()}
+
+
 async def _chat(request: ChatRequest) -> str:
-    return await ask(build_messages(request))
+    selected = await resolve_model(request.model)
+    return await ask(build_messages(request), selected_model=selected)
 
 
 def build_messages(request: ChatRequest):
@@ -231,8 +242,9 @@ async def chat_stream(request: ChatRequest):
     """Streaming chat: sends the reply piece by piece as the model produces it."""
     if not request.message.strip():
         raise HTTPException(422, "Message cannot be blank.")
+    selected = await call_model_errors(resolve_model(request.model))
     client, response = await call_model_errors(
-        open_stream(build_messages(request))
+        open_stream(build_messages(request), selected_model=selected)
     )
 
     async def pieces():
@@ -269,8 +281,9 @@ async def chat_stream(request: ChatRequest):
 async def summarize(request: SummarizeRequest):
     if not request.text.strip():
         raise HTTPException(422, "Text cannot be blank.")
+    selected = await call_model_errors(resolve_model(request.model))
     return await call_model_errors(
-        summarize_document(request.text, request.length, request.mode, request.topic)
+        summarize_document(request.text, request.length, request.mode, request.topic, selected)
     )
 
 
@@ -280,12 +293,14 @@ async def summarize_file(
     length: Literal["short", "medium", "detailed"] = Form("medium"),
     mode: Literal["general", "science", "news"] = Form("general"),
     topic: str = Form("", max_length=120),
+    model: str = Form("", max_length=120),
 ):
     data = await file.read(MAX_UPLOAD_BYTES + 1)
     if len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="File is too large. The limit is 5 MB.")
     text = extract_text(file.filename or "", data)
-    result = await call_model_errors(summarize_document(text, length, mode, topic))
+    selected = await call_model_errors(resolve_model(model))
+    result = await call_model_errors(summarize_document(text, length, mode, topic, selected))
     return {**result, "filename": file.filename, "characters": len(text)}
 
 
@@ -293,9 +308,8 @@ async def summarize_file(
 async def improve(request: GrammarRequest):
     if not request.text.strip():
         raise HTTPException(422, "Text cannot be blank.")
-    improved = await call_model_errors(
-        improve_text(request.text, request.task)
-    )
+    selected = await call_model_errors(resolve_model(request.model))
+    improved = await call_model_errors(improve_text(request.text, request.task, selected))
     return {"improved_text": improved}
 
 

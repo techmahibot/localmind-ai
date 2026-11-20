@@ -675,7 +675,7 @@ function Composer({ value, onChange, onSubmit, onStop, loading, placeholder, sub
 // Chat
 // ---------------------------------------------------------------------------
 
-function ChatPanel({ username, deployment }) {
+function ChatPanel({ username, deployment, model }) {
   const begin = useBusy();
   const [messages, setMessages] = useState(() => loadChat(username));
   const [input, setInput] = useState("");
@@ -721,7 +721,7 @@ function ChatPanel({ username, deployment }) {
       const res = await fetch("/api/chat/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text, history }),
+        body: JSON.stringify({ message: text, history, model }),
         signal: controller.signal,
       });
       if (!res.ok) throw await errorFromResponse(res);
@@ -833,7 +833,7 @@ function ChatPanel({ username, deployment }) {
 // Documents (ask questions about a file)
 // ---------------------------------------------------------------------------
 
-function DocumentsPanel({ username, deployment }) {
+function DocumentsPanel({ username, deployment, model }) {
   const begin = useBusy();
   const [doc, setDoc] = useState(() => loadDocState(username).doc);
   const [messages, setMessages] = useState(() => loadDocState(username).messages);
@@ -897,7 +897,7 @@ function DocumentsPanel({ username, deployment }) {
       const res = await fetch(`/api/docs/${doc.doc_id}/ask`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question, history }),
+        body: JSON.stringify({ question, history, model }),
         signal: controller.signal,
       });
       if (!res.ok) {
@@ -1054,7 +1054,7 @@ function DocumentsPanel({ username, deployment }) {
 // Summarize
 // ---------------------------------------------------------------------------
 
-function SummarizePanel() {
+function SummarizePanel({ model }) {
   const begin = useBusy();
   const [text, setText] = useState("");
   const [file, setFile] = useState(null);
@@ -1084,10 +1084,13 @@ function SummarizePanel() {
         form.append("file", file);
         form.append("length", length);
         form.append("mode", mode);
+        if (model) form.append("model", model);
         if (mode === "news") form.append("topic", topic.trim());
         data = await postForm("/api/summarize/file", form);
       } else {
-        data = await postJson("/api/summarize", { text, length, mode, topic: mode === "news" ? topic.trim() : "" });
+        data = await postJson("/api/summarize", {
+          text, length, mode, topic: mode === "news" ? topic.trim() : "", model,
+        });
       }
       setResult(data);
     } catch (e) {
@@ -1173,7 +1176,7 @@ function SummarizePanel() {
 // Improve text
 // ---------------------------------------------------------------------------
 
-function ImprovePanel() {
+function ImprovePanel({ model }) {
   const begin = useBusy();
   const [text, setText] = useState("");
   const [file, setFile] = useState(null);
@@ -1202,9 +1205,10 @@ function ImprovePanel() {
         const form = new FormData();
         form.append("file", file);
         form.append("task", task);
+        if (model) form.append("model", model);
         data = await postForm("/api/improve-text/file", form);
       } else {
-        data = await postJson("/api/improve-text/long", { text, task });
+        data = await postJson("/api/improve-text/long", { text, task, model });
         data = { ...data, original: text };
       }
       setResult(data);
@@ -1531,7 +1535,23 @@ export default function App() {
 function Workspace({ username, onLogout }) {
   const [tab, setTab] = useState("chat");
   const health = useHealth();
+  const [models, setModels] = useState([]);
+  const [model, setModel] = useState("");
   const [busyCount, setBusyCount] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    fetch("/api/models")
+      .then((res) => res.ok ? res.json() : Promise.reject(new Error("Models unavailable")))
+      .then((data) => {
+        if (!active) return;
+        const names = Array.isArray(data.models) ? data.models : [];
+        setModels(names);
+        setModel(names.includes(data.default) ? data.default : names[0] || "");
+      })
+      .catch(() => { if (active) setModels([]); });
+    return () => { active = false; };
+  }, []);
 
   // Each panel calls begin() when it starts work and the returned function when it ends.
   const begin = useCallback(() => {
@@ -1557,7 +1577,7 @@ function Workspace({ username, onLogout }) {
               LocalMind<em>AI</em>
             </span>
           </div>
-          <StatusLight health={health} busy={busyCount > 0} />
+          <StatusLight health={{ ...health, model: model || health.model }} busy={busyCount > 0} />
           <nav className="nav" aria-label="Sections">
             {TABS.map((t) => (
               <button
@@ -1577,10 +1597,19 @@ function Workspace({ username, onLogout }) {
           </div>
         </aside>
         <main className="main" id="main" tabIndex={-1}>
+          {models.length > 0 && (
+            <div className="model-toolbar">
+              <label htmlFor="model-select">Model</label>
+              <select id="model-select" value={model} onChange={(e) => setModel(e.target.value)}
+                disabled={busyCount > 0}>
+                {models.map((name) => <option key={name} value={name}>{name}</option>)}
+              </select>
+            </div>
+          )}
           {/* All panels stay mounted so switching tabs keeps your work. */}
           {TABS.map(({ id, Panel }) => (
             <div key={id} className={`view${tab === id ? " active" : ""}`}>
-              <Panel username={username} deployment={health.deployment} />
+              <Panel username={username} deployment={health.deployment} model={model} />
             </div>
           ))}
         </main>

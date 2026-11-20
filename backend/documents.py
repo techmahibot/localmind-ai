@@ -32,7 +32,7 @@ from pypdf import PdfReader
 
 from auth import AuthConfigurationError, DATABASE_ERRORS, connection
 from grammer import improve_text
-from llm import ModelConfigurationError, ModelResponseError, open_stream, stream_content
+from llm import ModelConfigurationError, ModelResponseError, open_stream, resolve_model, stream_content
 from summarizer import split_text
 
 NUM_CTX = 4096
@@ -313,6 +313,7 @@ class ChatTurn(BaseModel):
 class AskRequest(BaseModel):
     question: str = Field(min_length=1)
     history: List[ChatTurn] = []
+    model: str = Field(default="", max_length=120)
 
 
 DOC_SYSTEM_PROMPT = (
@@ -384,7 +385,10 @@ async def ask_document(doc_id: str, request: AskRequest, http: Request):
         },
     ]
 
-    client, response = await model_errors(open_stream(messages, options={"num_ctx": NUM_CTX}))
+    selected = await model_errors(resolve_model(request.model))
+    client, response = await model_errors(
+        open_stream(messages, options={"num_ctx": NUM_CTX}, selected_model=selected)
+    )
 
     async def pieces():
         finished = False
@@ -428,9 +432,10 @@ ImproveTask = Literal["grammar", "formal", "simple", "concise", "reformat"]
 class ImproveRequest(BaseModel):
     text: str = Field(min_length=1)
     task: ImproveTask = "grammar"
+    model: str = Field(default="", max_length=120)
 
 
-async def improve_long(text: str, task: str) -> dict:
+async def improve_long(text: str, task: str, model: str = "") -> dict:
     """Improve text of any reasonable length, one section at a time."""
     text = text.strip()
     if len(text) > MAX_IMPROVE_CHARS:
@@ -445,23 +450,26 @@ async def improve_long(text: str, task: str) -> dict:
     chunks = split_text(text, IMPROVE_CHUNK_CHARS)
     improved = []
     for chunk in chunks:
-        improved.append((await improve_text(chunk, task)).strip())
+        improved.append((await improve_text(chunk, task, model)).strip())
     return {"improved_text": "\n".join(improved), "chunks": len(chunks)}
 
 
 @router.post("/improve-text/long")
 async def improve_pasted_text(request: ImproveRequest):
-    return await model_errors(improve_long(request.text, request.task))
+    selected = await model_errors(resolve_model(request.model))
+    return await model_errors(improve_long(request.text, request.task, selected))
 
 
 @router.post("/improve-text/file")
 async def improve_file(
     file: UploadFile = File(...),
     task: ImproveTask = Form("grammar"),
+    model: str = Form("", max_length=120),
 ):
     data = await read_upload(file)
     text = await asyncio.to_thread(extract_text, file.filename or "", data)
-    result = await model_errors(improve_long(text, task))
+    selected = await model_errors(resolve_model(model))
+    result = await model_errors(improve_long(text, task, selected))
     return {**result, "filename": file.filename, "characters": len(text)}
 
 

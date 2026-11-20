@@ -15,11 +15,14 @@ Usernames are 3–30 ASCII letters, numbers, or underscores and are matched with
 
 ## Chat
 
+`GET /models` returns `{"models":["qwen2.5:3b","llama3.2:3b"],"default":"qwen2.5:3b"}` on a local host. It lists installed text-generation models; hosted deployments offer the configured model. An optional `model` field on chat, summaries, writing tools, and document questions selects one of these values. Unavailable models return 503.
+
 `POST /chat` accepts:
 
 ```json
 {
   "message": "Explain local networks",
+  "model": "qwen2.5:3b",
   "history": [
     {"role": "user", "content": "What is a LAN?"},
     {"role": "assistant", "content": "A local area network connects nearby devices."}

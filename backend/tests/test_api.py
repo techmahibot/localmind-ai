@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 
 import main
-from llm import ModelResponseError
+from llm import ModelConfigurationError, ModelResponseError
 
 
 class ApiTests(unittest.IsolatedAsyncioTestCase):
@@ -64,7 +64,7 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             response = await self.client.post("/api/chat", json={"message": "Hi"})
             self.assertEqual(response.status_code, 502)
 
-        async def open_fake_stream(_):
+        async def open_fake_stream(_, **kwargs):
             client = httpx.AsyncClient(transport=httpx.MockTransport(
                 lambda request: httpx.Response(
                     200, text='{"message":{"content":"Hello"},"done":false}\n'
@@ -77,7 +77,7 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.text, "Hello world")
 
-        async def interrupted_stream(_):
+        async def interrupted_stream(_, **kwargs):
             client = httpx.AsyncClient(transport=httpx.MockTransport(
                 lambda request: httpx.Response(
                     200, text='{"message":{"content":"Partial"},"done":false}\n'
@@ -138,6 +138,20 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
              patch.object(main, "reachable", new_callable=AsyncMock, return_value=False):
             response = await self.client.get("/api/health")
         self.assertEqual(response.json()["deployment"], "hosted")
+
+    async def test_model_list_and_invalid_selection(self):
+        await self.signup()
+        with patch.object(main, "available_models", new_callable=AsyncMock,
+                          return_value=["qwen2.5:3b", "llama3.2:3b"]):
+            response = await self.client.get("/api/models")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("llama3.2:3b", response.json()["models"])
+        with patch.object(main, "resolve_model", new_callable=AsyncMock,
+                          side_effect=ModelConfigurationError("Selected model is not available on this host.")):
+            response = await self.client.post("/api/chat", json={
+                "message": "Hello", "model": "unknown:latest"
+            })
+        self.assertEqual(response.status_code, 503)
 
     async def test_account_storage_failure_has_readable_error(self):
         with patch.object(main, "register", side_effect=sqlite3.OperationalError("offline")):

@@ -51,9 +51,9 @@ def configuration():
     return kind, base + "/chat/completions", base + "/models", {"Authorization": "Bearer " + key}
 
 
-def payload(messages, stream=False, options=None):
+def payload(messages, stream=False, options=None, selected_model=None):
     kind = provider()
-    body = {"model": model_name(), "messages": messages, "stream": stream}
+    body = {"model": selected_model or model_name(), "messages": messages, "stream": stream}
     if kind == "ollama" and options:
         body["options"] = options
     return body
@@ -85,10 +85,38 @@ def stream_content(line):
     return data.get("choices", [{}])[0].get("delta", {}).get("content") or "", False
 
 
-async def ask(messages, options=None):
+async def available_models():
+    kind, _, url, headers = configuration()
+    if kind == "openai":
+        return [model_name()]
+    async with httpx.AsyncClient(timeout=5.0, trust_env=False) as client:
+        response = await client.get(url, headers=headers)
+        response.raise_for_status()
+        try:
+            names = [
+                item["name"] for item in response.json()["models"]
+                if isinstance(item.get("name"), str)
+                and ("capabilities" not in item or "completion" in item["capabilities"])
+            ]
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
+            raise ModelResponseError("The model server returned an invalid model list.") from exc
+        return names
+
+
+async def resolve_model(requested):
+    if not requested:
+        return model_name()
+    if requested not in await available_models():
+        raise ModelConfigurationError("Selected model is not available on this host.")
+    return requested
+
+
+async def ask(messages, options=None, selected_model=None):
     _, url, _, headers = configuration()
-    async with httpx.AsyncClient(timeout=180.0) as client:
-        response = await client.post(url, headers=headers, json=payload(messages, options=options))
+    async with httpx.AsyncClient(timeout=180.0, trust_env=provider() != "ollama") as client:
+        response = await client.post(
+            url, headers=headers, json=payload(messages, options=options, selected_model=selected_model)
+        )
         response.raise_for_status()
         try:
             return reply_content(response.json())
@@ -96,12 +124,14 @@ async def ask(messages, options=None):
             raise ModelResponseError("The model returned invalid JSON.") from exc
 
 
-async def open_stream(messages, options=None):
+async def open_stream(messages, options=None, selected_model=None):
     _, url, _, headers = configuration()
-    client = httpx.AsyncClient(timeout=180.0)
+    client = httpx.AsyncClient(timeout=180.0, trust_env=provider() != "ollama")
     try:
         response = await client.send(
-            client.build_request("POST", url, headers=headers, json=payload(messages, stream=True, options=options)),
+            client.build_request("POST", url, headers=headers,
+                                 json=payload(messages, stream=True, options=options,
+                                              selected_model=selected_model)),
             stream=True,
         )
         response.raise_for_status()
@@ -113,6 +143,6 @@ async def open_stream(messages, options=None):
 
 async def reachable():
     _, _, url, headers = configuration()
-    async with httpx.AsyncClient(timeout=2.0) as client:
+    async with httpx.AsyncClient(timeout=2.0, trust_env=provider() != "ollama") as client:
         response = await client.get(url, headers=headers)
         return response.status_code == 200
