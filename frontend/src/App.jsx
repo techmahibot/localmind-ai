@@ -1541,16 +1541,23 @@ function Workspace({ username, onLogout }) {
 
   useEffect(() => {
     let active = true;
-    fetch("/api/models")
-      .then((res) => res.ok ? res.json() : Promise.reject(new Error("Models unavailable")))
-      .then((data) => {
+    async function refreshModels() {
+      try {
+        const res = await fetch("/api/models");
+        if (!res.ok) throw new Error("Models unavailable");
+        const data = await res.json();
         if (!active) return;
         const names = Array.isArray(data.models) ? data.models : [];
         setModels(names);
-        setModel(names.includes(data.default) ? data.default : names[0] || "");
-      })
-      .catch(() => { if (active) setModels([]); });
-    return () => { active = false; };
+        setModel((current) => names.includes(current)
+          ? current : names.includes(data.default) ? data.default : names[0] || "");
+      } catch {
+        if (active) setModels([]);
+      }
+    }
+    refreshModels();
+    const timer = setInterval(refreshModels, 15000);
+    return () => { active = false; clearInterval(timer); };
   }, []);
 
   // Each panel calls begin() when it starts work and the returned function when it ends.
