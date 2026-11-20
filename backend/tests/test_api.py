@@ -1,4 +1,5 @@
 import os
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 
 import main
+from llm import ModelConfigurationError, ModelResponseError
 
 
 class ApiTests(unittest.IsolatedAsyncioTestCase):
@@ -57,8 +59,12 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(main, "ask", new_callable=AsyncMock, side_effect=httpx.ReadTimeout("slow")):
             response = await self.client.post("/api/chat", json={"message": "Hi"})
             self.assertEqual(response.status_code, 504)
+        with patch.object(main, "ask", new_callable=AsyncMock,
+                          side_effect=ModelResponseError("The model returned an unexpected response.")):
+            response = await self.client.post("/api/chat", json={"message": "Hi"})
+            self.assertEqual(response.status_code, 502)
 
-        async def open_fake_stream(_):
+        async def open_fake_stream(_, **kwargs):
             client = httpx.AsyncClient(transport=httpx.MockTransport(
                 lambda request: httpx.Response(
                     200, text='{"message":{"content":"Hello"},"done":false}\n'
@@ -70,6 +76,18 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             response = await self.client.post("/api/chat/stream", json={"message": "Hi"})
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.text, "Hello world")
+
+        async def interrupted_stream(_, **kwargs):
+            client = httpx.AsyncClient(transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    200, text='{"message":{"content":"Partial"},"done":false}\n'
+                )))
+            response = await client.send(client.build_request("GET", "http://fake"), stream=True)
+            return client, response
+        with patch.object(main, "open_stream", side_effect=interrupted_stream):
+            response = await self.client.post("/api/chat/stream", json={"message": "Hi"})
+            self.assertIn("Partial", response.text)
+            self.assertIn("ended unexpectedly", response.text)
 
     async def test_summaries_uploads_and_grammar(self):
         await self.signup()
@@ -90,7 +108,8 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.json()["characters"], 11)
         for name, data, status in [
             ("bad.csv", b"abc", 415), ("empty.txt", b"  ", 422),
-            ("binary.txt", b"\xff", 422), ("large.txt", b"x" * (main.MAX_UPLOAD_BYTES + 1), 413),
+            ("binary.txt", b"\xff", 422), ("broken.pdf", b"not a pdf", 422),
+            ("large.txt", b"x" * (main.MAX_UPLOAD_BYTES + 1), 413),
         ]:
             response = await self.client.post("/api/summarize/file", files={
                 "file": (name, data, "application/octet-stream")
@@ -108,6 +127,37 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.json()["account_storage"], "reachable")
         self.assertTrue(response.json()["login_configured"])
         self.assertEqual(response.json()["model_server"], "unavailable")
+        self.assertEqual(response.json()["deployment"], "local")
+        with patch.object(main, "database_ready", side_effect=sqlite3.OperationalError("offline")), \
+             patch.object(main, "reachable", new_callable=AsyncMock, return_value=True):
+            response = await self.client.get("/api/health")
+        self.assertEqual(response.json()["account_storage"], "unavailable")
+        self.assertFalse(response.json()["login_configured"])
+        self.assertEqual(response.json()["model_server"], "reachable")
+        with patch.dict(os.environ, {"VERCEL": "1"}), \
+             patch.object(main, "reachable", new_callable=AsyncMock, return_value=False):
+            response = await self.client.get("/api/health")
+        self.assertEqual(response.json()["deployment"], "hosted")
+
+    async def test_model_list_and_invalid_selection(self):
+        await self.signup()
+        with patch.object(main, "available_models", new_callable=AsyncMock,
+                          return_value=["qwen2.5:3b", "llama3.2:3b"]):
+            response = await self.client.get("/api/models")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("llama3.2:3b", response.json()["models"])
+        with patch.object(main, "resolve_model", new_callable=AsyncMock,
+                          side_effect=ModelConfigurationError("Selected model is not available on this host.")):
+            response = await self.client.post("/api/chat", json={
+                "message": "Hello", "model": "unknown:latest"
+            })
+        self.assertEqual(response.status_code, 503)
+
+    async def test_account_storage_failure_has_readable_error(self):
+        with patch.object(main, "register", side_effect=sqlite3.OperationalError("offline")):
+            response = await self.signup()
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["detail"], "Account storage is temporarily unavailable.")
 
 
 if __name__ == "__main__":

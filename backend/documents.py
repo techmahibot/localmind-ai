@@ -14,6 +14,7 @@ import base64
 import io
 import json
 import math
+import os
 import re
 import socket
 import time
@@ -30,24 +31,24 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 from pypdf import PdfReader
 
+from auth import AuthConfigurationError, DATABASE_ERRORS, connection
 from grammer import improve_text
-from auth import DATABASE_ERRORS
 from chat_storage import (
     create_conversation,
     get_messages,
     list_conversations,
     save_message,
 )
-from llm import ModelConfigurationError, ModelResponseError, open_stream, stream_content
+from llm import ModelConfigurationError, ModelResponseError, open_stream, resolve_model, stream_content
 from summarizer import split_text
 
 NUM_CTX = 4096
 
-MAX_UPLOAD_BYTES = 5 * 1024 * 1024
-CHUNK_CHARS = 900
-TOP_K = 4
-MAX_DOCS = 30
-MAX_HISTORY = 6
+MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB
+CHUNK_CHARS = 900  # size of one searchable section of a document
+TOP_K = 4  # how many sections are sent to the model with each question
+MAX_DOCS = 30  # documents kept per account; older documents are pruned
+MAX_HISTORY = 6  # earlier chat messages sent along for follow-up questions
 
 IMPROVE_CHUNK_CHARS = 2500
 MAX_IMPROVE_CHARS = 15000
@@ -308,18 +309,49 @@ class DocIndex:
         return sorted(i for _, i in scored[:k])
 
 
-DOCS = {}
+def ensure_documents_table(conn):
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS localmind_documents ("
+        "id TEXT PRIMARY KEY, owner_id BIGINT NOT NULL, filename TEXT NOT NULL, "
+        "pages_json TEXT NOT NULL, created_at DOUBLE PRECISION NOT NULL)"
+    )
 
 
-def store_document(index: DocIndex) -> str:
-    while len(DOCS) >= MAX_DOCS:
-        oldest = min(DOCS, key=lambda d: DOCS[d].created)
-        del DOCS[oldest]
-
-    doc_id = uuid.uuid4().hex[:12]
-    DOCS[doc_id] = index
-
+def store_document(index: DocIndex, pages) -> str:
+    serialized = json.dumps(pages, ensure_ascii=False)
+    if len(serialized.encode("utf-8")) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "The extracted text is too large. The limit is 5 MB.")
+    doc_id = uuid.uuid4().hex
+    with connection() as (conn, postgres):
+        ensure_documents_table(conn)
+        marker = "%s" if postgres else "?"
+        conn.execute(
+            f"INSERT INTO localmind_documents (id, owner_id, filename, pages_json, created_at) "
+            f"VALUES ({', '.join([marker] * 5)})",
+            (doc_id, index.owner, index.filename, serialized, time.time()),
+        )
+        rows = conn.execute(
+            f"SELECT id FROM localmind_documents WHERE owner_id = {marker} "
+            "ORDER BY created_at DESC, id DESC",
+            (index.owner,),
+        ).fetchall()
+        for (old_id,) in rows[MAX_DOCS:]:
+            conn.execute(f"DELETE FROM localmind_documents WHERE id = {marker}", (old_id,))
     return doc_id
+
+
+def load_document(doc_id: str, owner_id: int):
+    with connection() as (conn, postgres):
+        ensure_documents_table(conn)
+        marker = "%s" if postgres else "?"
+        row = conn.execute(
+            f"SELECT filename, pages_json FROM localmind_documents "
+            f"WHERE id = {marker} AND owner_id = {marker}",
+            (doc_id, owner_id),
+        ).fetchone()
+    if row is None:
+        return None
+    return DocIndex(row[0], json.loads(row[1]), owner_id)
 
 
 # ----------------------------------------------------------------------------
@@ -336,6 +368,7 @@ class AskRequest(BaseModel):
     question: str = Field(min_length=1)
     history: List[ChatTurn] = Field(default_factory=list)
     conversation_id: Optional[int] = None
+    model: str = Field(default="", max_length=120)
 
 
 DOC_SYSTEM_PROMPT = (
@@ -357,16 +390,11 @@ async def upload_document(request: Request, file: UploadFile = File(...)):
     name = file.filename or "document"
 
     pages = await asyncio.to_thread(extract_pages, name, data)
-
-    index = await asyncio.to_thread(
-        DocIndex,
-        name,
-        pages,
-        getattr(request.state, "user_id", None),
-    )
-
-    doc_id = store_document(index)
-
+    index = await asyncio.to_thread(DocIndex, name, pages, getattr(request.state, "user_id", None))
+    try:
+        doc_id = await asyncio.to_thread(store_document, index, pages)
+    except (AuthConfigurationError, *DATABASE_ERRORS):
+        raise HTTPException(503, "Document storage is temporarily unavailable.")
     page_numbers = [number for number, _ in pages if number is not None]
 
     return {
@@ -386,10 +414,11 @@ async def upload_document(request: Request, file: UploadFile = File(...)):
 @router.post("/docs/{doc_id}/ask")
 async def ask_document(doc_id: str, request: AskRequest, http: Request):
     user_id = getattr(http.state, "user_id", None)
-
-    # Verify document ownership.
-    index = DOCS.get(doc_id)
-
+    try:
+        index = await asyncio.to_thread(load_document, doc_id, user_id)
+    except (AuthConfigurationError, *DATABASE_ERRORS):
+        raise HTTPException(503, "Document storage is temporarily unavailable.")
+    # Documents belong to the person who uploaded them; others get the same 404.
     if index is None or index.owner != user_id:
         raise HTTPException(
             status_code=404,
@@ -512,8 +541,9 @@ async def ask_document(doc_id: str, request: AskRequest, http: Request):
         },
     ]
 
+    selected = await model_errors(resolve_model(request.model))
     client, response = await model_errors(
-        open_stream(messages, options={"num_ctx": NUM_CTX})
+        open_stream(messages, options={"num_ctx": NUM_CTX}, selected_model=selected)
     )
 
     async def pieces():
@@ -592,9 +622,10 @@ ImproveTask = Literal["grammar", "formal", "simple", "concise", "reformat"]
 class ImproveRequest(BaseModel):
     text: str = Field(min_length=1)
     task: ImproveTask = "grammar"
+    model: str = Field(default="", max_length=120)
 
 
-async def improve_long(text: str, task: str) -> dict:
+async def improve_long(text: str, task: str, model: str = "") -> dict:
     """Improve text of any reasonable length, one section at a time."""
     text = text.strip()
 
@@ -612,8 +643,7 @@ async def improve_long(text: str, task: str) -> dict:
     improved = []
 
     for chunk in chunks:
-        improved.append((await improve_text(chunk, task)).strip())
-
+        improved.append((await improve_text(chunk, task, model)).strip())
     return {"improved_text": "\n".join(improved), "chunks": len(chunks)}
 
 
@@ -622,24 +652,21 @@ async def improve_pasted_text(request: ImproveRequest):
     if not request.text.strip():
         raise HTTPException(422, "Text cannot be blank.")
 
-    return await model_errors(improve_long(request.text, request.task))
+    selected = await model_errors(resolve_model(request.model))
+    return await model_errors(improve_long(request.text, request.task, selected))
 
 
 @router.post("/improve-text/file")
 async def improve_file(
     file: UploadFile = File(...),
     task: ImproveTask = Form("grammar"),
+    model: str = Form("", max_length=120),
 ):
     data = await read_upload(file)
     text = await asyncio.to_thread(extract_text, file.filename or "", data)
-
-    result = await model_errors(improve_long(text, task))
-
-    return {
-        **result,
-        "filename": file.filename,
-        "characters": len(text),
-    }
+    selected = await model_errors(resolve_model(model))
+    result = await model_errors(improve_long(text, task, selected))
+    return {**result, "filename": file.filename, "characters": len(text)}
 
 
 # ----------------------------------------------------------------------------
@@ -755,6 +782,8 @@ def lan_addresses() -> List[str]:
 
 @router.get("/network")
 async def network(request: Request):
+    if os.environ.get("VERCEL"):
+        return {"urls": []}
     port = request.url.port or 80
 
     return {

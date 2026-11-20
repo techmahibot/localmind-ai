@@ -1,5 +1,4 @@
-
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { Children, createContext, isValidElement, useCallback, useContext, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import "./App.css";
 
@@ -188,6 +187,14 @@ function describeStreamError(e) {
   return e.message;
 }
 
+// Plain text of a rendered markdown node (used by the "Copy code" button).
+function nodeText(node) {
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(nodeText).join("");
+  if (isValidElement(node)) return nodeText(node.props.children);
+  return "";
+}
+
 function dropEmptyAssistant(messages) {
   const last = messages[messages.length - 1];
   return last && last.role === "assistant" && last.content === "" ? messages.slice(0, -1) : messages;
@@ -252,18 +259,136 @@ function Icon({ name, size = 18 }) {
   );
 }
 
-function Logo() {
+// Original vector art used for decoration. Colours come from CSS variables so they follow the theme.
+function Bow({ size = 32, className = "" }) {
   return (
-    <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true">
-      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeWidth="2" />
-      <circle cx="12" cy="12" r="3.6" fill="var(--accent)" />
+    <svg className={`bow ${className}`} viewBox="0 0 48 34" width={size} height={size * (34 / 48)} aria-hidden="true">
+      <path className="bow-tail" d="M21.5 19 L13 32.5 L20 29.5 L24 21 Z" />
+      <path className="bow-tail" d="M26.5 19 L35 32.5 L28 29.5 L24 21 Z" />
+      <path className="bow-loop" d="M24 16 C14 1 1.5 3.5 2.5 14 C3.5 26 16 25 24 16 Z" />
+      <path className="bow-loop" d="M24 16 C34 1 46.5 3.5 45.5 14 C44.5 26 32 25 24 16 Z" />
+      <path className="bow-fold" d="M22 15.5 C16 9 9 9 7 12.5 M26 15.5 C32 9 39 9 41 12.5" />
+      <ellipse className="bow-knot" cx="24" cy="16.5" rx="4.6" ry="5.4" />
     </svg>
   );
+}
+
+function Cherries({ size = 64, className = "" }) {
+  return (
+    <svg className={`cherries ${className}`} viewBox="0 0 64 64" width={size} height={size} aria-hidden="true">
+      <path className="cherry-stem" d="M21 41 C22 24 30 12 42 5 M43 44 C42 28 42 16 42 5" />
+      <path className="cherry-leaf" d="M42 5 C50 2 58 6 60 12 C52 14 45 11 42 5 Z" />
+      <circle className="cherry-fruit" cx="20" cy="46" r="13" />
+      <circle className="cherry-fruit" cx="44" cy="48" r="12" />
+      <ellipse className="cherry-shine" cx="15.5" cy="41" rx="3.4" ry="2.2" transform="rotate(-30 15.5 41)" />
+      <ellipse className="cherry-shine" cx="40" cy="43.5" rx="3" ry="2" transform="rotate(-30 40 43.5)" />
+    </svg>
+  );
+}
+
+function Sparkle({ size = 18, className = "" }) {
+  return (
+    <svg className={`sparkle ${className}`} viewBox="0 0 24 24" width={size} height={size} aria-hidden="true">
+      <path d="M12 1.5 C12.6 8 16 11.4 22.5 12 C16 12.6 12.6 16 12 22.5 C11.4 16 8 12.6 1.5 12 C8 11.4 11.4 8 12 1.5 Z" />
+    </svg>
+  );
+}
+
+function Logo() {
+  return <Bow size={40} />;
 }
 
 // ---------------------------------------------------------------------------
 // Shared pieces
 // ---------------------------------------------------------------------------
+
+// Keeps the newest text in view while a reply streams, but stops following as soon as the
+// reader scrolls up. A "Jump to latest" button brings them back.
+function useAutoScroll(deps) {
+  const ref = useRef(null);
+  const stuck = useRef(true);
+  const lastTop = useRef(0); // where we last scrolled to ourselves
+  const [away, setAway] = useState(false);
+
+  function onScroll() {
+    const el = ref.current;
+    if (!el) return;
+    const near = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    stuck.current = near;
+    if (near) lastTop.current = el.scrollTop;
+    setAway(!near);
+  }
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    if (el.scrollHeight <= el.clientHeight + 1) {
+      // Nothing to scroll (for example after clearing the chat): start fresh.
+      stuck.current = true;
+      lastTop.current = 0;
+      setAway(false);
+      return;
+    }
+    if (!stuck.current) return;
+    if (el.scrollTop < lastTop.current - 4) {
+      // The reader moved up since we last scrolled, so stop following. Checking the real
+      // position here avoids a race with the scroll event.
+      stuck.current = false;
+      setAway(true);
+      return;
+    }
+    el.scrollTop = el.scrollHeight;
+    lastTop.current = el.scrollTop;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
+
+  function jump() {
+    const el = ref.current;
+    if (!el) return;
+    stuck.current = true;
+    setAway(false);
+    // Instant, not smooth: a smooth scroll passes through "not near the bottom" and would cancel following.
+    el.scrollTop = el.scrollHeight;
+    lastTop.current = el.scrollTop;
+  }
+
+  return { ref, onScroll, away, jump };
+}
+
+function JumpButton({ show, onClick }) {
+  if (!show) return null;
+  return (
+    <button className="jump" onClick={onClick}>
+      <Icon name="send" size={14} />
+      Jump to latest
+    </button>
+  );
+}
+
+// A short message with an Undo button, used after clearing a conversation.
+function UndoToast({ text, onUndo, onDismiss }) {
+  useEffect(() => {
+    const timer = setTimeout(onDismiss, 8000);
+    return () => clearTimeout(timer);
+  }, [onDismiss]);
+  return (
+    <div className="toast" role="status">
+      <span>{text}</span>
+      <button onClick={onUndo}>Undo</button>
+    </div>
+  );
+}
+
+function CodeBlock({ children }) {
+  return (
+    <div className="codeblock">
+      <CopyButton text={nodeText(children).replace(/\n$/, "")} label="Copy code" />
+      <pre>{children}</pre>
+    </div>
+  );
+}
+
+const MARKDOWN_COMPONENTS = { pre: CodeBlock };
 
 // Lets any panel tell the sidebar light that the model is working.
 const BusyContext = createContext(() => () => {});
@@ -273,7 +398,7 @@ function useBusy() {
 }
 
 function useHealth() {
-  const [health, setHealth] = useState({ state: "checking", model: "" });
+  const [health, setHealth] = useState({ state: "checking", model: "", deployment: "checking" });
   useEffect(() => {
     let alive = true;
     async function check() {
@@ -284,10 +409,11 @@ function useHealth() {
           setHealth({
             state: data.model_server === "reachable" ? "ok" : "no-ollama",
             model: data.model || "",
+            deployment: data.deployment || "unknown",
           });
         }
       } catch {
-        if (alive) setHealth({ state: "no-server", model: "" });
+        if (alive) setHealth({ state: "no-server", model: "", deployment: "unknown" });
       }
     }
     check();
@@ -314,7 +440,9 @@ function StatusLight({ health, busy }) {
     <div
       className={`status ${state}`}
       role="status"
-      title={state === "no-ollama" ? "Start the Ollama app on the host computer, then reload this page." : undefined}
+      title={state === "no-ollama" ? (health.deployment === "local"
+        ? "Start Ollama on the host computer, then reload this page."
+        : "The configured model service is unavailable.") : undefined}
     >
       <span className="led" />
       <div>
@@ -359,7 +487,7 @@ function DocxButton({ text, onError }) {
   );
 }
 
-function NetworkCard() {
+function NetworkCard({ deployment }) {
   const [url, setUrl] = useState(null);
   const [loaded, setLoaded] = useState(false);
   useEffect(() => {
@@ -370,6 +498,12 @@ function NetworkCard() {
       .finally(() => setLoaded(true));
   }, []);
   if (!loaded) return null;
+  if (deployment === "hosted") {
+    return <div className="network">
+      <p className="network-title">Online demo</p>
+      <p className="network-note">Requests use a hosted model service. Use the local setup for the offline LAN demo.</p>
+    </div>;
+  }
   return (
     <div className="network">
       <p className="network-title">{url ? "Open on other devices" : "This computer only"}</p>
@@ -458,13 +592,16 @@ function Message({ message, streaming }) {
   const waiting = streaming && message.content === "";
   return (
     <div className={`msg assistant${streaming ? " streaming" : ""}`}>
+      <span className="bot-avatar" aria-hidden="true">
+        <Bow size={22} />
+      </span>
       <div className="bubble assistant">
         {waiting ? (
           <p className="thinking">Thinking</p>
         ) : (
           <>
             <div className="markdown">
-              <ReactMarkdown>{message.content}</ReactMarkdown>
+              <ReactMarkdown components={MARKDOWN_COMPONENTS}>{message.content}</ReactMarkdown>
             </div>
             {!streaming && message.sources?.length > 0 && (
               <details className="sources">
@@ -538,7 +675,7 @@ function Composer({ value, onChange, onSubmit, onStop, loading, placeholder, sub
 // Chat
 // ---------------------------------------------------------------------------
 
-function ChatPanel({ username }) {
+function ChatPanel({ username, deployment, model }) {
   const begin = useBusy();
 
   const [messages, setMessages] = useState([]);
@@ -548,9 +685,10 @@ function ChatPanel({ username }) {
   const [loading, setLoading] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [error, setError] = useState("");
-
-  const bottomRef = useRef(null);
+  const [cleared, setCleared] = useState(null);
   const abortRef = useRef(null);
+  const scroll = useAutoScroll([messages, loading]);
+  const dismissCleared = useCallback(() => setCleared(null), []);
 
   // Load the signed-in user's saved conversations from the database.
   useEffect(() => {
@@ -608,10 +746,6 @@ function ChatPanel({ username }) {
     };
   }, [username]);
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "auto" });
-  }, [messages, loading]);
-
   // Refresh the conversation selector after a response has been saved.
   async function refreshConversations() {
     try {
@@ -665,6 +799,8 @@ function ChatPanel({ username }) {
 
     if (!text || loading || loadingHistory) return;
 
+    setCleared(null);
+
     // Display the new messages immediately while the model generates a response.
     setMessages((previous) => [
       ...previous,
@@ -688,6 +824,7 @@ function ChatPanel({ username }) {
         body: JSON.stringify({
           message: text,
           conversation_id: conversationId,
+          model,
         }),
         signal: controller.signal,
       });
@@ -724,7 +861,9 @@ function ChatPanel({ username }) {
 
   return (
     <div className="view-inner">
-      <ViewHead title="Chat" subtitle="Your conversations are saved to your account.">
+      <ViewHead title="Chat" subtitle={deployment === "hosted"
+        ? "Talk to the hosted model. Requests use the internet."
+        : deployment === "local" ? "Talk to the model running on your local network." : "Talk to the model."}>
         <button
           className="btn ghost small"
           onClick={() => exportChat(messages)}
@@ -736,7 +875,12 @@ function ChatPanel({ username }) {
 
         <button
           className="btn ghost small"
-          onClick={newChat}
+          onClick={() => {
+            setCleared(
+              messages.length > 0 ? { messages, conversationId } : null
+            );
+            newChat();
+          }}
           disabled={loading || loadingHistory}
         >
           <Icon name="pencil" size={15} />
@@ -776,7 +920,14 @@ function ChatPanel({ username }) {
           </div>
         </div>
 
-        <div className="messages">
+        <div
+          className="messages"
+          ref={scroll.ref}
+          onScroll={scroll.onScroll}
+          role="log"
+          aria-live="polite"
+          aria-label="Conversation"
+        >
           {loadingHistory && (
             <div className="hero">
               <p>Loading your conversations...</p>
@@ -785,10 +936,12 @@ function ChatPanel({ username }) {
 
           {!loadingHistory && messages.length === 0 && (
             <div className="hero">
-              <h3>Ask anything. Nothing leaves this network.</h3>
+              <Bow size={84} className="hero-bow" />
+              <h3>Hi {username}, what can I do for you today?</h3>
               <p>
-                The model runs on the computer hosting this page. Start with one of these, or write
-                your own.
+                {deployment === "hosted" ? "This online demo sends requests to a hosted model. "
+                  : deployment === "local" ? "The model runs on this network. " : ""}
+                Start with one of these, or write your own.
               </p>
               <ul className="starters">
                 {CHAT_STARTERS.map((q) => (
@@ -807,10 +960,19 @@ function ChatPanel({ username }) {
               streaming={loading && i === messages.length - 1 && m.role === "assistant"}
             />
           ))}
-
-          <div ref={bottomRef} />
+          <JumpButton show={scroll.away} onClick={scroll.jump} />
         </div>
-
+        {cleared && (
+          <UndoToast
+            text="Chat cleared."
+            onDismiss={dismissCleared}
+            onUndo={() => {
+              setMessages(cleared.messages);
+              setConversationId(cleared.conversationId);
+              setCleared(null);
+            }}
+          />
+        )}
         {error && (
           <div className="error" role="alert">
             {error}
@@ -835,7 +997,7 @@ function ChatPanel({ username }) {
 // Documents (ask questions about a file)
 // ---------------------------------------------------------------------------
 
-function DocumentsPanel({ username }) {
+function DocumentsPanel({ username, deployment, model }) {
   const begin = useBusy();
   const [doc, setDoc] = useState(() => loadDocState(username).doc);
   const [messages, setMessages] = useState(() => loadDocState(username).messages);
@@ -843,9 +1005,11 @@ function DocumentsPanel({ username }) {
   const [uploading, setUploading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const bottomRef = useRef(null);
+  const [cleared, setCleared] = useState(null);
   const abortRef = useRef(null);
   const fileInputRef = useRef(null);
+  const scroll = useAutoScroll([messages, loading]);
+  const dismissCleared = useCallback(() => setCleared(null), []);
 
   useEffect(() => {
     try {
@@ -853,8 +1017,7 @@ function DocumentsPanel({ username }) {
     } catch {
       /* storage unavailable, ignore */
     }
-    bottomRef.current?.scrollIntoView({ behavior: "auto" });
-  }, [doc, messages, loading, username]);
+  }, [doc, messages, username]);
 
   async function upload(file) {
     if (!file) return;
@@ -880,6 +1043,7 @@ function DocumentsPanel({ username }) {
     const question = (override ?? input).trim();
     if (!question || loading || !doc) return;
     const history = messages.map(({ role, content }) => ({ role, content }));
+    setCleared(null);
     setMessages([
       ...messages,
       { role: "user", content: question },
@@ -897,11 +1061,11 @@ function DocumentsPanel({ username }) {
       const res = await fetch(`/api/docs/${doc.doc_id}/ask`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question, history }),
+        body: JSON.stringify({ question, history, model }),
         signal: controller.signal,
       });
       if (!res.ok) {
-        // The server forgets documents when it restarts.
+        // The document may have been removed after newer uploads.
         if (res.status === 404) setDoc(null);
         throw await errorFromResponse(res);
       }
@@ -929,8 +1093,10 @@ function DocumentsPanel({ username }) {
           <div className="upload-intro">
             <h3>Ask questions about a file</h3>
             <p>
-              Answers come only from your file, and each one shows the pages it used. The file stays
-              on this computer.
+              Answers use excerpts from your file, and each one shows the pages it used.
+              {deployment === "hosted"
+                ? " Extracted text is saved with your account on the hosted database and sent to the hosted model for answers."
+                : " Extracted text is saved locally for your account."}
             </p>
           </div>
           <FileDrop
@@ -958,6 +1124,7 @@ function DocumentsPanel({ username }) {
         <button
           className="btn ghost small"
           onClick={() => {
+            setCleared(messages);
             setMessages([]);
             setError("");
           }}
@@ -992,9 +1159,10 @@ function DocumentsPanel({ username }) {
           </div>
         </div>
 
-        <div className="messages">
+        <div className="messages" ref={scroll.ref} onScroll={scroll.onScroll} role="log" aria-live="polite" aria-label="Conversation">
           {messages.length === 0 && (
             <div className="hero">
+              <Bow size={84} className="hero-bow" />
               <h3>What do you want to know?</h3>
               <p>Ask in your own words. Try one of these to start.</p>
               <ul className="starters">
@@ -1015,8 +1183,18 @@ function DocumentsPanel({ username }) {
               streaming={loading && i === messages.length - 1 && m.role === "assistant"}
             />
           ))}
-          <div ref={bottomRef} />
         </div>
+        <JumpButton show={scroll.away} onClick={scroll.jump} />
+        {cleared && (
+          <UndoToast
+            text="Conversation cleared."
+            onDismiss={dismissCleared}
+            onUndo={() => {
+              setMessages(cleared);
+              setCleared(null);
+            }}
+          />
+        )}
         {error && (
           <div className="error" role="alert">
             {error}
@@ -1040,11 +1218,13 @@ function DocumentsPanel({ username }) {
 // Summarize
 // ---------------------------------------------------------------------------
 
-function SummarizePanel() {
+function SummarizePanel({ model }) {
   const begin = useBusy();
   const [text, setText] = useState("");
   const [file, setFile] = useState(null);
   const [length, setLength] = useState("medium");
+  const [mode, setMode] = useState("general");
+  const [topic, setTopic] = useState("");
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -1067,9 +1247,14 @@ function SummarizePanel() {
         const form = new FormData();
         form.append("file", file);
         form.append("length", length);
+        form.append("mode", mode);
+        if (model) form.append("model", model);
+        if (mode === "news") form.append("topic", topic.trim());
         data = await postForm("/api/summarize/file", form);
       } else {
-        data = await postJson("/api/summarize", { text, length });
+        data = await postJson("/api/summarize", {
+          text, length, mode, topic: mode === "news" ? topic.trim() : "", model,
+        });
       }
       setResult(data);
     } catch (e) {
@@ -1104,11 +1289,25 @@ function SummarizePanel() {
           disabled={!!file}
         />
         <div className="controls">
+          <select value={mode} onChange={(e) => setMode(e.target.value)} aria-label="Summary type">
+            <option value="general">General</option>
+            <option value="science">Science &amp; technology</option>
+            <option value="news">News &amp; editorials</option>
+          </select>
           <select value={length} onChange={(e) => setLength(e.target.value)} aria-label="Summary length">
             <option value="short">Short (5 bullets)</option>
             <option value="medium">Medium</option>
             <option value="detailed">Detailed</option>
           </select>
+        </div>
+        {mode === "news" && (
+          <label className="topic-label">
+            Topic to focus on (optional)
+            <input className="field" value={topic} maxLength={120}
+              onChange={(e) => setTopic(e.target.value)} placeholder="For example: space research" />
+          </label>
+        )}
+        <div className="controls">
           <button className="btn primary" onClick={run} disabled={loading || (!file && !text.trim())}>
             {loading ? "Summarizing" : "Summarize"}
           </button>
@@ -1141,12 +1340,13 @@ function SummarizePanel() {
 // Improve text
 // ---------------------------------------------------------------------------
 
-function ImprovePanel() {
+function ImprovePanel({ model }) {
   const begin = useBusy();
   const [text, setText] = useState("");
   const [file, setFile] = useState(null);
   const [task, setTask] = useState("grammar");
   const [result, setResult] = useState(null);
+  const [view, setView] = useState("improved");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const fileInputRef = useRef(null);
@@ -1161,6 +1361,7 @@ function ImprovePanel() {
     setLoading(true);
     setError("");
     setResult(null);
+    setView("improved");
     const done = begin();
     try {
       let data;
@@ -1168,9 +1369,11 @@ function ImprovePanel() {
         const form = new FormData();
         form.append("file", file);
         form.append("task", task);
+        if (model) form.append("model", model);
         data = await postForm("/api/improve-text/file", form);
       } else {
-        data = await postJson("/api/improve-text/long", { text, task });
+        data = await postJson("/api/improve-text/long", { text, task, model });
+        data = { ...data, original: text };
       }
       setResult(data);
     } catch (e) {
@@ -1241,7 +1444,38 @@ function ImprovePanel() {
                 </button>
               </div>
             </div>
-            <div className="result">{result.improved_text}</div>
+            {result.original && (
+              <div className="segmented" role="group" aria-label="View">
+                <button
+                  className={view === "improved" ? "on" : ""}
+                  aria-pressed={view === "improved"}
+                  onClick={() => setView("improved")}
+                >
+                  Improved
+                </button>
+                <button
+                  className={view === "compare" ? "on" : ""}
+                  aria-pressed={view === "compare"}
+                  onClick={() => setView("compare")}
+                >
+                  Compare
+                </button>
+              </div>
+            )}
+            {view === "compare" && result.original ? (
+              <div className="compare">
+                <div>
+                  <h4>Original</h4>
+                  <div className="result">{result.original}</div>
+                </div>
+                <div>
+                  <h4>Improved</h4>
+                  <div className="result">{result.improved_text}</div>
+                </div>
+              </div>
+            ) : (
+              <div className="result">{result.improved_text}</div>
+            )}
             <p className="meta">{improveNote(result)}</p>
           </div>
         )}
@@ -1261,11 +1495,12 @@ const TABS = [
   { id: "improve", label: "Improve text", icon: "pencil", Panel: ImprovePanel },
 ];
 
-function AuthPage({ onLogin }) {
+function AuthPage({ onLogin, notice }) {
   const [mode, setMode] = useState("login");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const signup = mode === "signup";
@@ -1303,9 +1538,17 @@ function AuthPage({ onLogin }) {
 
   return (
     <main className="login-page">
+      <div className="login-decor" aria-hidden="true">
+        <Sparkle size={26} className="s1" />
+        <Sparkle size={16} className="s2" />
+        <Sparkle size={22} className="s3" />
+        <Sparkle size={14} className="s4" />
+        <Cherries size={96} className="c1" />
+        <Cherries size={64} className="c2" />
+      </div>
       <form className="login-card" onSubmit={submit}>
         <div className="login-logo">
-          <Logo />
+          <Bow size={72} />
         </div>
         <h1>{signup ? "Create your account" : "Welcome to LocalMind AI"}</h1>
         <p>
@@ -1313,6 +1556,11 @@ function AuthPage({ onLogin }) {
             ? "Choose a username and password to get started."
             : "Log in to continue to your AI assistant."}
         </p>
+        {notice && (
+          <div className="notice" role="status">
+            {notice}
+          </div>
+        )}
         <label htmlFor="username">Username</label>
         <input
           id="username"
@@ -1326,22 +1574,32 @@ function AuthPage({ onLogin }) {
         />
         {signup && <small className="field-hint">3 to 30 letters, numbers or underscores</small>}
         <label htmlFor="password">Password</label>
-        <input
-          id="password"
-          type="password"
-          autoComplete={signup ? "new-password" : "current-password"}
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          minLength={signup ? 10 : undefined}
-          required
-        />
+        <div className="password-field">
+          <input
+            id="password"
+            type={showPassword ? "text" : "password"}
+            autoComplete={signup ? "new-password" : "current-password"}
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            minLength={signup ? 10 : undefined}
+            required
+          />
+          <button
+            type="button"
+            className="show-password"
+            onClick={() => setShowPassword((v) => !v)}
+            aria-pressed={showPassword}
+          >
+            {showPassword ? "Hide" : "Show"}
+          </button>
+        </div>
         {signup && (
           <>
             <small className="field-hint">At least 10 characters</small>
             <label htmlFor="confirm-password">Confirm password</label>
             <input
               id="confirm-password"
-              type="password"
+              type={showPassword ? "text" : "password"}
               autoComplete="new-password"
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
@@ -1385,6 +1643,7 @@ function Account({ username, onLogout }) {
 export default function App() {
   const [user, setUser] = useState(null);
   const [checking, setChecking] = useState(true);
+  const [notice, setNotice] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -1405,7 +1664,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const expired = () => setUser(null);
+    const expired = () => {
+      setNotice("Your session ended. Please sign in again.");
+      setUser(null);
+    };
     window.addEventListener("localmind-session-expired", expired);
     return () => window.removeEventListener("localmind-session-expired", expired);
   }, []);
@@ -1416,18 +1678,51 @@ export default function App() {
     } catch {
       /* the cookie may already be gone; sign out on screen anyway */
     }
+    setNotice("");
     setUser(null);
   }
 
   if (checking) return <div className="session-check">Checking session</div>;
-  if (!user) return <AuthPage onLogin={setUser} />;
+  if (!user)
+    return (
+      <AuthPage
+        notice={notice}
+        onLogin={(name) => {
+          setNotice("");
+          setUser(name);
+        }}
+      />
+    );
   return <Workspace username={user} onLogout={logout} />;
 }
 
 function Workspace({ username, onLogout }) {
   const [tab, setTab] = useState("chat");
   const health = useHealth();
+  const [models, setModels] = useState([]);
+  const [model, setModel] = useState("");
   const [busyCount, setBusyCount] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    async function refreshModels() {
+      try {
+        const res = await fetch("/api/models");
+        if (!res.ok) throw new Error("Models unavailable");
+        const data = await res.json();
+        if (!active) return;
+        const names = Array.isArray(data.models) ? data.models : [];
+        setModels(names);
+        setModel((current) => names.includes(current)
+          ? current : names.includes(data.default) ? data.default : names[0] || "");
+      } catch {
+        if (active) setModels([]);
+      }
+    }
+    refreshModels();
+    const timer = setInterval(refreshModels, 15000);
+    return () => { active = false; clearInterval(timer); };
+  }, []);
 
   // Each panel calls begin() when it starts work and the returned function when it ends.
   const begin = useCallback(() => {
@@ -1443,6 +1738,9 @@ function Workspace({ username, onLogout }) {
   return (
     <BusyContext.Provider value={begin}>
       <div className="shell">
+        <a className="skip-link" href="#main">
+          Skip to content
+        </a>
         <aside className="sidebar">
           <div className="brand">
             <Logo />
@@ -1450,7 +1748,7 @@ function Workspace({ username, onLogout }) {
               LocalMind<em>AI</em>
             </span>
           </div>
-          <StatusLight health={health} busy={busyCount > 0} />
+          <StatusLight health={{ ...health, model: model || health.model }} busy={busyCount > 0} />
           <nav className="nav" aria-label="Sections">
             {TABS.map((t) => (
               <button
@@ -1465,15 +1763,24 @@ function Workspace({ username, onLogout }) {
             ))}
           </nav>
           <div className="sidebar-foot">
-            <NetworkCard />
+            <NetworkCard deployment={health.deployment} />
             <Account username={username} onLogout={onLogout} />
           </div>
         </aside>
-        <main className="main">
+        <main className="main" id="main" tabIndex={-1}>
+          {models.length > 0 && (
+            <div className="model-toolbar">
+              <label htmlFor="model-select">Model</label>
+              <select id="model-select" value={model} onChange={(e) => setModel(e.target.value)}
+                disabled={busyCount > 0}>
+                {models.map((name) => <option key={name} value={name}>{name}</option>)}
+              </select>
+            </div>
+          )}
           {/* All panels stay mounted so switching tabs keeps your work. */}
           {TABS.map(({ id, Panel }) => (
             <div key={id} className={`view${tab === id ? " active" : ""}`}>
-              <Panel username={username} />
+              <Panel username={username} deployment={health.deployment} model={model} />
             </div>
           ))}
         </main>

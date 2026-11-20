@@ -42,6 +42,10 @@ The AI model and backend run on a central host computer. Other devices connected
 - Context-aware follow-up questions
 - Conversation history
 - Individual sign-up and login with saved user accounts and 12-hour browser sessions
+- Streaming replies, text/file summarization, and grammar/reformatting API
+- General, science/technology, and topic-focused news summaries of supplied text
+- Selection among installed Ollama text-generation models (hosted demo uses its configured model)
+- Document question answering with uploaded PDF, Word, and text files
 - Responsive chatbot interface
 - Multiple LAN client access
 - No dependency on external AI APIs
@@ -64,13 +68,13 @@ localmind-ai/
 │   ├── main.py
 │   ├── auth.py
 │   ├── llm.py
+│   ├── documents.py
 │   ├── requirements.txt
 │   └── venv/
 │
 ├── docs/
-│   ├── project-report.md
-│   ├── architecture.md
-│   └── testing.md
+│   ├── api.md
+│   └── offline-validation.md
 │
 └── README.md
 ```
@@ -80,7 +84,7 @@ localmind-ai/
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/localmind-ai.git
+git clone https://github.com/techmahibot/localmind-ai.git
 cd localmind-ai
 ```
 
@@ -172,6 +176,8 @@ The host computer performs local model inference and serves responses to connect
 
 See [API contract](docs/api.md) for route examples, authentication, response shapes,
 error statuses, and the backend test command.
+See [disconnected LAN validation](docs/offline-validation.md) for the two-device
+demo and evidence checklist.
 
 The application should be tested for:
 
@@ -192,11 +198,9 @@ The application should be tested for:
 
 ## Future Enhancements
 
-- Streaming AI responses
 - Password reset and account management
-- Multiple model selection
 - Improved conversation management
-- Document-based question answering (RAG)
+- Document deletion and storage limits for larger deployments
 - Local chat database
 - Better concurrent-user handling
 

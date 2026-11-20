@@ -2,7 +2,7 @@
 from llm import ask
 
 
-async def improve_text(text: str, task: str = "grammar"):
+async def improve_text(text: str, task: str = "grammar", model: str = ""):
     prompts = {
         "grammar": (
             "Correct grammar, spelling, and punctuation errors. "
@@ -50,5 +50,6 @@ async def improve_text(text: str, task: str = "grammar"):
                 "role": "user",
                 "content": f"{instruction}\n\nText:\n{text}"
             }
-        ]
+        ],
+        selected_model=model or None,
     )

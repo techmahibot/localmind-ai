@@ -20,6 +20,18 @@ class DocumentToolTests(unittest.TestCase):
         self.assertEqual(result["chunks"], summarizer.MAX_CHUNKS)
         self.assertEqual(mock.await_count, summarizer.MAX_CHUNKS + 1)
 
+    def test_specialized_summaries_preserve_context(self):
+        with patch.object(summarizer, "_ask", new_callable=AsyncMock, return_value="Summary") as mock:
+            asyncio.run(summarizer.summarize_document("The experiment measured 5 ms.", mode="science"))
+            self.assertIn("measured results", mock.await_args.args[0])
+            asyncio.run(summarizer.summarize_document(
+                "Headline and editorial text.", mode="news", topic="space research"
+            ))
+            self.assertIn("reported facts", mock.await_args.args[0])
+            self.assertIn("space research", mock.await_args.args[0])
+            with self.assertRaises(ValueError):
+                asyncio.run(summarizer.summarize_document("Text", mode="unknown"))
+
     def test_writing_modes_and_invalid_task(self):
         with patch.object(grammer, "ask", new_callable=AsyncMock, return_value="Improved.") as mock:
             for task in ("grammar", "formal", "simple", "concise", "reformat"):

@@ -15,11 +15,14 @@ Usernames are 3–30 ASCII letters, numbers, or underscores and are matched with
 
 ## Chat
 
+`GET /models` returns `{"models":["qwen2.5:3b","llama3.2:3b"],"default":"qwen2.5:3b"}` on a local host. It lists installed text-generation models; hosted deployments offer the configured model. An optional `model` field on chat, summaries, writing tools, and document questions selects one of these values. Unavailable models return 503.
+
 `POST /chat` accepts:
 
 ```json
 {
   "message": "Explain local networks",
+  "model": "qwen2.5:3b",
   "history": [
     {"role": "user", "content": "What is a LAN?"},
     {"role": "assistant", "content": "A local area network connects nearby devices."}
@@ -33,9 +36,9 @@ Success is `{"reply":"A local network..."}`. `history` is optional; the browser 
 
 ## Summarization
 
-`POST /summarize` accepts `{"text":"Your source text","length":"medium"}`. Length is `short`, `medium`, or `detailed`, defaulting to `medium`.
+`POST /summarize` accepts `{"text":"Your source text","length":"medium","mode":"general","topic":""}`. Length is `short`, `medium`, or `detailed`, defaulting to `medium`. Mode is `general`, `science`, or `news`; the optional topic focuses news/editorial overviews on supplied text.
 
-`POST /summarize/file` accepts `multipart/form-data`: field `file` contains a UTF-8 `.txt`/`.md` or text-based `.pdf`; optional field `length` has the same values. Upload limit: 5 MB. Scanned image-only PDFs need OCR and are currently rejected.
+`POST /summarize/file` accepts `multipart/form-data`: field `file` contains a UTF-8 `.txt`/`.md`, text-based `.pdf`, or `.docx`; optional fields `length`, `mode`, and `topic` use the same values. Upload limit: 5 MB. Scanned image-only PDFs need OCR and are currently rejected. News must be supplied locally; the mode does not fetch headlines.
 
 Both return `{"summary":"...","chunks":1,"truncated":false}`. The file endpoint also returns `filename` and `characters`. When `truncated` is true, only the first eight document chunks were summarized; the UI must show this warning.
 
@@ -63,7 +66,7 @@ The tests mock model replies and use temporary local account storage. Demonstrat
 
 All routes below need a signed-in session.
 
-- `POST /api/docs` (multipart `file`: `.pdf`, `.docx`, `.txt`, `.md`, up to 5 MB) reads a file and returns `doc_id`, `filename`, `sections`, `pages`. The document is kept in server memory for the person who uploaded it.
+- `POST /api/docs` (multipart `file`: `.pdf`, `.docx`, `.txt`, `.md`, up to 5 MB) reads a file and returns `doc_id`, `filename`, `sections`, `pages`. The extracted text is stored in SQLite locally or PostgreSQL on the hosted deployment, scoped to the uploader. Each account keeps its most recent 30 documents.
 - `POST /api/docs/{doc_id}/ask` with `{"question": "...", "history": [...]}` streams the answer as plain text. The passages used are sent in the `X-Sources` header (base64-encoded JSON). Another user's document returns 404.
 - `POST /api/improve-text/long` with `{"text": "...", "task": "grammar|formal|simple|concise|reformat"}` improves text up to 15,000 characters section by section. `POST /api/improve-text/file` does the same for an uploaded file.
 - `POST /api/export/docx` with `{"text": "..."}` returns a Word file.

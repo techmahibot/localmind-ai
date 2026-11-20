@@ -17,9 +17,11 @@ from llm import (
     ModelConfigurationError,
     ModelResponseError,
     ask,
+    available_models,
     model_name,
     open_stream,
     reachable,
+    resolve_model,
     stream_content,
 )
 from chat_storage import (
@@ -300,34 +302,23 @@ class HistoryMessage(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    message: str = Field(
-        min_length=1,
-        max_length=MAX_MESSAGE_CHARS,
-    )
+    message: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
     conversation_id: int | None = Field(default=None, gt=0)
-
-    # Retained for compatibility with older frontend requests.
-    # The database is now the source of truth for conversation history.
-    history: List[HistoryMessage] = Field(
-        default_factory=list,
-        max_length=100,
-    )
+    model: str = Field(default="", max_length=120)
+    history: List[HistoryMessage] = Field(default_factory=list, max_length=100)
 
 
 class GrammarRequest(BaseModel):
     text: str = Field(min_length=1, max_length=48000)
-    task: Literal[
-        "grammar",
-        "formal",
-        "simple",
-        "concise",
-        "reformat",
-    ] = "grammar"
-
+    task: Literal["grammar", "formal", "simple", "concise", "reformat"] = "grammar"
+    model: str = Field(default="", max_length=120)
 
 class SummarizeRequest(BaseModel):
     text: str = Field(min_length=1)
     length: Literal["short", "medium", "detailed"] = "medium"
+    mode: Literal["general", "science", "news"] = "general"
+    topic: str = Field(default="", max_length=120)
+    model: str = Field(default="", max_length=120)
 
 
 # -------------------------------------------------------------------
@@ -405,6 +396,8 @@ async def health():
         "status": "LocalMind AI backend is running",
         "model_server": "reachable" if model_ok else "unavailable",
         "model": model_name(),
+        "deployment": "hosted" if (os.environ.get("VERCEL") or
+                                    os.environ.get("LLM_PROVIDER", "ollama").lower() == "openai") else "local",
         "configuration_error": config_error,
         "account_storage": "reachable" if storage_ok else "unavailable",
         "login_configured": bool(
@@ -422,11 +415,7 @@ async def health():
 # -------------------------------------------------------------------
 
 def prepare_chat(user_id: int, request: ChatRequest):
-    """
-    Find or create a conversation and retrieve its previous messages.
-
-    The conversation must belong to the logged-in user.
-    """
+    """Find or create a conversation and retrieve its previous messages."""
 
     if request.conversation_id is None:
         conversation_id = create_conversation(
@@ -434,21 +423,20 @@ def prepare_chat(user_id: int, request: ChatRequest):
             title=request.message.strip()[:200] or "New chat",
             conversation_type="chat",
         )
-
         previous_messages = []
-
     else:
         conversation_id = request.conversation_id
-
-        previous_messages = get_messages(
-            user_id,
-            conversation_id,
-        )
-
+        previous_messages = get_messages(user_id, conversation_id)
         if previous_messages is None:
             raise HTTPException(404, "Conversation not found.")
 
     return conversation_id, previous_messages
+
+
+@app.get("/api/models")
+async def models():
+    names = await call_model_errors(available_models())
+    return {"models": names, "default": model_name()}
 
 
 def build_messages(request: ChatRequest, previous_messages=None):
@@ -533,7 +521,10 @@ async def chat(request: ChatRequest, http: Request):
         request,
     )
 
-    reply = await call_model_errors(ask(messages))
+    selected = await call_model_errors(resolve_model(request.model))
+    reply = await call_model_errors(
+        ask(messages, selected_model=selected)
+    )
 
     try:
         save_message(
@@ -557,14 +548,14 @@ async def chat_stream(request: ChatRequest, http: Request):
 
     if not request.message.strip():
         raise HTTPException(422, "Message cannot be blank.")
-
     conversation_id, messages = persist_user_message(
         http.state.user_id,
         request,
     )
 
+    selected = await call_model_errors(resolve_model(request.model))
     client, response = await call_model_errors(
-        open_stream(messages)
+        open_stream(messages, selected_model=selected)
     )
 
     async def pieces():
@@ -635,11 +626,14 @@ async def chat_stream(request: ChatRequest, http: Request):
 async def summarize(request: SummarizeRequest):
     if not request.text.strip():
         raise HTTPException(422, "Text cannot be blank.")
-
+    selected = await call_model_errors(resolve_model(request.model))
     return await call_model_errors(
         summarize_document(
             request.text,
             request.length,
+            request.mode,
+            request.topic,
+            selected,
         )
     )
 
@@ -648,6 +642,9 @@ async def summarize(request: SummarizeRequest):
 async def summarize_file(
     file: UploadFile = File(...),
     length: Literal["short", "medium", "detailed"] = Form("medium"),
+    mode: Literal["general", "science", "news"] = Form("general"),
+    topic: str = Form("", max_length=120),
+    model: str = Form("", max_length=120),
 ):
     data = await file.read(MAX_UPLOAD_BYTES + 1)
 
@@ -657,13 +654,10 @@ async def summarize_file(
             detail="File is too large. The limit is 5 MB.",
         )
 
-    text = extract_text(
-        file.filename or "",
-        data,
-    )
-
+    text = extract_text(file.filename or "", data)
+    selected = await call_model_errors(resolve_model(model))
     result = await call_model_errors(
-        summarize_document(text, length)
+        summarize_document(text, length, mode, topic, selected)
     )
 
     return {
@@ -673,7 +667,6 @@ async def summarize_file(
     }
 
 
-# -------------------------------------------------------------------
 # Grammar improvement
 # -------------------------------------------------------------------
 
@@ -681,14 +674,10 @@ async def summarize_file(
 async def improve(request: GrammarRequest):
     if not request.text.strip():
         raise HTTPException(422, "Text cannot be blank.")
-
+    selected = await call_model_errors(resolve_model(request.model))
     improved = await call_model_errors(
-        improve_text(
-            request.text,
-            request.task,
-        )
+        improve_text(request.text, request.task, selected)
     )
-
     return {"improved_text": improved}
 
 

@@ -29,7 +29,13 @@ The database connection is managed in `auth.py`.
 
 ## 3. Database Schema
 
-The application creates a table named `localmind_users`.
+The application creates `localmind_users` for accounts and `localmind_documents`
+for extracted document text. Documents belong to the uploading user and survive
+backend restarts and separate hosted function instances. Up to 30 recent
+documents are kept per account; older entries are removed when new ones are uploaded.
+
+`localmind_documents` stores `id`, `owner_id`, `filename`, `pages_json`
+(extracted page text), and `created_at`. The original binary file is not stored.
 
 | Column | Purpose |
 |---|---|
