@@ -192,6 +192,8 @@ async def health():
         "status": "LocalMind AI backend is running",
         "model_server": "reachable" if model_ok else "unavailable",
         "model": model_name(),
+        "deployment": "hosted" if (os.environ.get("VERCEL") or
+                                    os.environ.get("LLM_PROVIDER", "ollama").lower() == "openai") else "local",
         "configuration_error": config_error,
         "account_storage": "reachable" if storage_ok else "unavailable",
         "login_configured": bool(storage_ok and

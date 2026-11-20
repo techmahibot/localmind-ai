@@ -398,7 +398,7 @@ function useBusy() {
 }
 
 function useHealth() {
-  const [health, setHealth] = useState({ state: "checking", model: "" });
+  const [health, setHealth] = useState({ state: "checking", model: "", deployment: "checking" });
   useEffect(() => {
     let alive = true;
     async function check() {
@@ -409,10 +409,11 @@ function useHealth() {
           setHealth({
             state: data.model_server === "reachable" ? "ok" : "no-ollama",
             model: data.model || "",
+            deployment: data.deployment || "unknown",
           });
         }
       } catch {
-        if (alive) setHealth({ state: "no-server", model: "" });
+        if (alive) setHealth({ state: "no-server", model: "", deployment: "unknown" });
       }
     }
     check();
@@ -439,7 +440,9 @@ function StatusLight({ health, busy }) {
     <div
       className={`status ${state}`}
       role="status"
-      title={state === "no-ollama" ? "Start the Ollama app on the host computer, then reload this page." : undefined}
+      title={state === "no-ollama" ? (health.deployment === "local"
+        ? "Start Ollama on the host computer, then reload this page."
+        : "The configured model service is unavailable.") : undefined}
     >
       <span className="led" />
       <div>
@@ -484,7 +487,7 @@ function DocxButton({ text, onError }) {
   );
 }
 
-function NetworkCard() {
+function NetworkCard({ deployment }) {
   const [url, setUrl] = useState(null);
   const [loaded, setLoaded] = useState(false);
   useEffect(() => {
@@ -495,6 +498,12 @@ function NetworkCard() {
       .finally(() => setLoaded(true));
   }, []);
   if (!loaded) return null;
+  if (deployment === "hosted") {
+    return <div className="network">
+      <p className="network-title">Online demo</p>
+      <p className="network-note">Requests use a hosted model service. Use the local setup for the offline LAN demo.</p>
+    </div>;
+  }
   return (
     <div className="network">
       <p className="network-title">{url ? "Open on other devices" : "This computer only"}</p>
@@ -666,7 +675,7 @@ function Composer({ value, onChange, onSubmit, onStop, loading, placeholder, sub
 // Chat
 // ---------------------------------------------------------------------------
 
-function ChatPanel({ username }) {
+function ChatPanel({ username, deployment }) {
   const begin = useBusy();
   const [messages, setMessages] = useState(() => loadChat(username));
   const [input, setInput] = useState("");
@@ -731,7 +740,9 @@ function ChatPanel({ username }) {
 
   return (
     <div className="view-inner">
-      <ViewHead title="Chat" subtitle="Talk to the model. Everything stays on this computer.">
+      <ViewHead title="Chat" subtitle={deployment === "hosted"
+        ? "Talk to the hosted model. Requests use the internet."
+        : deployment === "local" ? "Talk to the model running on your local network." : "Talk to the model."}>
         <button
           className="btn ghost small"
           onClick={() => exportChat(messages)}
@@ -760,7 +771,9 @@ function ChatPanel({ username }) {
               <Bow size={84} className="hero-bow" />
               <h3>Hi {username}, what can I do for you today?</h3>
               <p>
-                Everything stays on this network. Start with one of these, or write your own.
+                {deployment === "hosted" ? "This online demo sends requests to a hosted model. "
+                  : deployment === "local" ? "The model runs on this network. " : ""}
+                Start with one of these, or write your own.
               </p>
               <ul className="starters">
                 {CHAT_STARTERS.map((q) => (
@@ -820,7 +833,7 @@ function ChatPanel({ username }) {
 // Documents (ask questions about a file)
 // ---------------------------------------------------------------------------
 
-function DocumentsPanel({ username }) {
+function DocumentsPanel({ username, deployment }) {
   const begin = useBusy();
   const [doc, setDoc] = useState(() => loadDocState(username).doc);
   const [messages, setMessages] = useState(() => loadDocState(username).messages);
@@ -916,8 +929,10 @@ function DocumentsPanel({ username }) {
           <div className="upload-intro">
             <h3>Ask questions about a file</h3>
             <p>
-              Answers come only from your file, and each one shows the pages it used. The file stays
-              on this computer.
+              Answers use excerpts from your file, and each one shows the pages it used.
+              {deployment === "hosted"
+                ? " Extracted text is saved with your account on the hosted database and sent to the hosted model for answers."
+                : " Extracted text is saved locally for your account."}
             </p>
           </div>
           <FileDrop
@@ -1557,7 +1572,7 @@ function Workspace({ username, onLogout }) {
             ))}
           </nav>
           <div className="sidebar-foot">
-            <NetworkCard />
+            <NetworkCard deployment={health.deployment} />
             <Account username={username} onLogout={onLogout} />
           </div>
         </aside>
@@ -1565,7 +1580,7 @@ function Workspace({ username, onLogout }) {
           {/* All panels stay mounted so switching tabs keeps your work. */}
           {TABS.map(({ id, Panel }) => (
             <div key={id} className={`view${tab === id ? " active" : ""}`}>
-              <Panel username={username} />
+              <Panel username={username} deployment={health.deployment} />
             </div>
           ))}
         </main>

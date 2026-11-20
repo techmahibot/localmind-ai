@@ -49,6 +49,13 @@ class DocumentTests(unittest.IsolatedAsyncioTestCase):
         client = self.client()
         self.assertEqual((await client.post("/api/docs", files={"file": ("a.txt", b"hello")})).status_code, 401)
 
+    async def test_hosted_network_does_not_expose_private_address(self):
+        client = self.client()
+        await self.signup(client, "NetworkUser")
+        with patch.dict(os.environ, {"VERCEL": "1"}):
+            response = await client.get("/api/network")
+        self.assertEqual(response.json(), {"urls": []})
+
     async def test_upload_docx_and_owner_only_access(self):
         owner, other = self.client(), self.client()
         await self.signup(owner, "Owner")

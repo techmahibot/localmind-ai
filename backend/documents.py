@@ -13,6 +13,7 @@ import base64
 import io
 import json
 import math
+import os
 import re
 import socket
 import time
@@ -547,5 +548,7 @@ def lan_addresses() -> List[str]:
 
 @router.get("/network")
 async def network(request: Request):
+    if os.environ.get("VERCEL"):
+        return {"urls": []}
     port = request.url.port or 80
     return {"urls": [f"http://{ip}:{port}" for ip in lan_addresses()]}

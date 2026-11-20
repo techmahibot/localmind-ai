@@ -127,12 +127,17 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.json()["account_storage"], "reachable")
         self.assertTrue(response.json()["login_configured"])
         self.assertEqual(response.json()["model_server"], "unavailable")
+        self.assertEqual(response.json()["deployment"], "local")
         with patch.object(main, "database_ready", side_effect=sqlite3.OperationalError("offline")), \
              patch.object(main, "reachable", new_callable=AsyncMock, return_value=True):
             response = await self.client.get("/api/health")
         self.assertEqual(response.json()["account_storage"], "unavailable")
         self.assertFalse(response.json()["login_configured"])
         self.assertEqual(response.json()["model_server"], "reachable")
+        with patch.dict(os.environ, {"VERCEL": "1"}), \
+             patch.object(main, "reachable", new_callable=AsyncMock, return_value=False):
+            response = await self.client.get("/api/health")
+        self.assertEqual(response.json()["deployment"], "hosted")
 
     async def test_account_storage_failure_has_readable_error(self):
         with patch.object(main, "register", side_effect=sqlite3.OperationalError("offline")):
