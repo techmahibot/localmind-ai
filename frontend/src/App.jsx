@@ -677,41 +677,141 @@ function Composer({ value, onChange, onSubmit, onStop, loading, placeholder, sub
 
 function ChatPanel({ username, deployment, model }) {
   const begin = useBusy();
-  const [messages, setMessages] = useState(() => loadChat(username));
+
+  const [messages, setMessages] = useState([]);
+  const [conversations, setConversations] = useState([]);
+  const [conversationId, setConversationId] = useState(null);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [loadingHistory, setLoadingHistory] = useState(true);
   const [error, setError] = useState("");
   const [cleared, setCleared] = useState(null);
   const abortRef = useRef(null);
   const scroll = useAutoScroll([messages, loading]);
   const dismissCleared = useCallback(() => setCleared(null), []);
 
+  // Load the signed-in user's saved conversations from the database.
   useEffect(() => {
-    try {
-      localStorage.setItem(chatKey(username), JSON.stringify(messages));
-    } catch {
-      /* storage unavailable, ignore */
+    let cancelled = false;
+
+    async function loadConversations() {
+      setLoadingHistory(true);
+      setError("");
+
+      try {
+        const res = await fetch("/api/conversations?conversation_type=chat");
+
+        if (!res.ok) throw await errorFromResponse(res);
+
+        const data = await res.json();
+
+        if (cancelled) return;
+
+        const savedConversations = data.conversations || [];
+        setConversations(savedConversations);
+
+        // Restore the most recently updated conversation.
+        if (savedConversations.length > 0) {
+          const latest = savedConversations[0];
+
+          const messageRes = await fetch(
+            `/api/conversations/${latest.id}/messages`
+          );
+
+          if (!messageRes.ok) throw await errorFromResponse(messageRes);
+
+          const messageData = await messageRes.json();
+
+          if (cancelled) return;
+
+          setConversationId(latest.id);
+          setMessages(messageData.messages || []);
+        } else {
+          setConversationId(null);
+          setMessages([]);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setError(e instanceof TypeError ? NETWORK_ERROR : e.message);
+        }
+      } finally {
+        if (!cancelled) setLoadingHistory(false);
+      }
     }
-  }, [messages, username]);
 
-  function send(override) {
-    run((override ?? input).trim(), messages);
+    loadConversations();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [username]);
+
+  // Refresh the conversation selector after a response has been saved.
+  async function refreshConversations() {
+    try {
+      const res = await fetch("/api/conversations?conversation_type=chat");
+
+      if (!res.ok) throw await errorFromResponse(res);
+
+      const data = await res.json();
+      setConversations(data.conversations || []);
+    } catch (e) {
+      setError(e instanceof TypeError ? NETWORK_ERROR : e.message);
+    }
   }
 
-  function regenerate() {
-    const last = messages.map((m) => m.role).lastIndexOf("user");
-    if (last < 0 || loading) return;
-    run(messages[last].content, messages.slice(0, last));
+  // Start a new conversation. Existing conversations remain saved.
+  function newChat() {
+    if (loading || loadingHistory) return;
+
+    setConversationId(null);
+    setMessages([]);
+    setInput("");
+    setError("");
   }
 
-  async function run(text, history) {
-    if (!text || loading) return;
-    // Add the user's message and an empty assistant message that fills up as text streams in.
-    setMessages([...history, { role: "user", content: text }, { role: "assistant", content: "" }]);
+  // Retrieve the messages belonging to a selected conversation.
+  async function openConversation(id) {
+    if (loading || loadingHistory || String(id) === String(conversationId)) return;
+
+    setLoadingHistory(true);
+    setError("");
+
+    try {
+      const res = await fetch(`/api/conversations/${id}/messages`);
+
+      if (!res.ok) throw await errorFromResponse(res);
+
+      const data = await res.json();
+
+      setConversationId(Number(id));
+      setMessages(data.messages || []);
+      setInput("");
+    } catch (e) {
+      setError(e instanceof TypeError ? NETWORK_ERROR : e.message);
+    } finally {
+      setLoadingHistory(false);
+    }
+  }
+
+  async function send(override) {
+    const text = (override ?? input).trim();
+
+    if (!text || loading || loadingHistory) return;
+
     setCleared(null);
+
+    // Display the new messages immediately while the model generates a response.
+    setMessages((previous) => [
+      ...previous,
+      { role: "user", content: text },
+      { role: "assistant", content: "" },
+    ]);
+
     setInput("");
     setError("");
     setLoading(true);
+
     const done = begin();
 
     const controller = new AbortController();
@@ -721,15 +821,36 @@ function ChatPanel({ username, deployment, model }) {
       const res = await fetch("/api/chat/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text, history, model }),
+        body: JSON.stringify({
+          message: text,
+          conversation_id: conversationId,
+          model,
+        }),
         signal: controller.signal,
       });
+
       if (!res.ok) throw await errorFromResponse(res);
-      await readTextStream(res, (reply) =>
-        setMessages((m) => [...m.slice(0, -1), { role: "assistant", content: reply }])
-      );
+
+      // The backend creates a conversation for the first message and
+      // returns its ID in the X-Conversation-Id response header.
+      const savedId = res.headers.get("X-Conversation-Id");
+
+      if (savedId) {
+        setConversationId(Number(savedId));
+      }
+
+      await readTextStream(res, (reply) => {
+        setMessages((previous) => [
+          ...previous.slice(0, -1),
+          { role: "assistant", content: reply },
+        ]);
+      });
+
+      await refreshConversations();
     } catch (e) {
-      if (e.name !== "AbortError") setError(describeStreamError(e));
+      if (e.name !== "AbortError") {
+        setError(describeStreamError(e));
+      }
     } finally {
       setMessages(dropEmptyAssistant);
       setLoading(false);
@@ -751,22 +872,69 @@ function ChatPanel({ username, deployment, model }) {
           <Icon name="download" size={15} />
           Export
         </button>
+
         <button
           className="btn ghost small"
           onClick={() => {
-            setCleared(messages);
-            setMessages([]);
-            setError("");
+            setCleared(
+              messages.length > 0 ? { messages, conversationId } : null
+            );
+            newChat();
           }}
-          disabled={messages.length === 0 || loading}
+          disabled={loading || loadingHistory}
         >
-          <Icon name="trash" size={15} />
-          Clear
+          <Icon name="pencil" size={15} />
+          New chat
         </button>
       </ViewHead>
+
       <section className="panel">
-        <div className="messages" ref={scroll.ref} onScroll={scroll.onScroll} role="log" aria-live="polite" aria-label="Conversation">
-          {messages.length === 0 && (
+        <div className="doc-card">
+          <div>
+            <div className="doc-name">Chat history</div>
+            <div className="doc-meta">
+              {conversations.length} saved conversation
+              {conversations.length === 1 ? "" : "s"}
+            </div>
+          </div>
+
+          <div className="doc-actions">
+            <select
+              value={conversationId ?? ""}
+              onChange={(e) => {
+                if (e.target.value) {
+                  openConversation(Number(e.target.value));
+                }
+              }}
+              disabled={loading || loadingHistory || conversations.length === 0}
+              aria-label="Select a saved conversation"
+            >
+              <option value="">Select a conversation</option>
+
+              {conversations.map((conversation) => (
+                <option key={conversation.id} value={conversation.id}>
+                  {conversation.title}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div
+          className="messages"
+          ref={scroll.ref}
+          onScroll={scroll.onScroll}
+          role="log"
+          aria-live="polite"
+          aria-label="Conversation"
+        >
+          {loadingHistory && (
+            <div className="hero">
+              <p>Loading your conversations...</p>
+            </div>
+          )}
+
+          {!loadingHistory && messages.length === 0 && (
             <div className="hero">
               <Bow size={84} className="hero-bow" />
               <h3>Hi {username}, what can I do for you today?</h3>
@@ -784,28 +952,23 @@ function ChatPanel({ username, deployment, model }) {
               </ul>
             </div>
           )}
+
           {messages.map((m, i) => (
             <Message
-              key={i}
+              key={m.id ?? i}
               message={m}
               streaming={loading && i === messages.length - 1 && m.role === "assistant"}
             />
           ))}
-          {!loading && messages.length > 0 && messages[messages.length - 1].role === "assistant" && (
-            <div className="regen-row">
-              <button className="btn small ghost" onClick={regenerate}>
-                Regenerate
-              </button>
-            </div>
-          )}
+          <JumpButton show={scroll.away} onClick={scroll.jump} />
         </div>
-        <JumpButton show={scroll.away} onClick={scroll.jump} />
         {cleared && (
           <UndoToast
             text="Chat cleared."
             onDismiss={dismissCleared}
             onUndo={() => {
-              setMessages(cleared);
+              setMessages(cleared.messages);
+              setConversationId(cleared.conversationId);
               setCleared(null);
             }}
           />
@@ -815,12 +978,13 @@ function ChatPanel({ username, deployment, model }) {
             {error}
           </div>
         )}
+
         <Composer
           value={input}
           onChange={setInput}
           onSubmit={() => send()}
           onStop={() => abortRef.current?.abort()}
-          loading={loading}
+          loading={loading || loadingHistory}
           placeholder="Message LocalMind"
           submitLabel="Send"
         />

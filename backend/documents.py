@@ -1,3 +1,4 @@
+
 """Document features for LocalMind AI.
 
 - Reading uploaded files (PDF, Word .docx, .txt, .md)
@@ -32,6 +33,12 @@ from pypdf import PdfReader
 
 from auth import AuthConfigurationError, DATABASE_ERRORS, connection
 from grammer import improve_text
+from chat_storage import (
+    create_conversation,
+    get_messages,
+    list_conversations,
+    save_message,
+)
 from llm import ModelConfigurationError, ModelResponseError, open_stream, resolve_model, stream_content
 from summarizer import split_text
 
@@ -50,7 +57,7 @@ router = APIRouter(prefix="/api")
 
 
 # ----------------------------------------------------------------------------
-# Model errors (same wording as main.py; kept here so this file stands alone)
+# Model errors
 # ----------------------------------------------------------------------------
 
 
@@ -90,18 +97,21 @@ def _docx_text(data: bytes) -> str:
     """Text of a Word file in reading order: paragraphs and table rows."""
     document = Document(io.BytesIO(data))
     parts = []
+
     for child in document.element.body.iterchildren():
         if child.tag.endswith("}p"):
             parts.append(Paragraph(child, document).text)
         elif child.tag.endswith("}tbl"):
             for row in Table(child, document).rows:
                 parts.append(" | ".join(cell.text.strip() for cell in row.cells))
+
     return "\n".join(parts)
 
 
 def extract_pages(filename: str, data: bytes):
-    """Return [(page_number_or_None, text), ...] for a .pdf, .docx, .txt or .md file."""
+    """Return [(page_number_or_None, text), ...] for supported document formats."""
     name = filename.lower()
+
     if name.endswith(".pdf"):
         try:
             reader = PdfReader(io.BytesIO(data))
@@ -114,6 +124,7 @@ def extract_pages(filename: str, data: bytes):
                 status_code=422,
                 detail="Could not read that PDF. It may be damaged or password protected.",
             )
+
     elif name.endswith(".docx"):
         try:
             pages = [(None, _docx_text(data).strip())]
@@ -122,11 +133,13 @@ def extract_pages(filename: str, data: bytes):
                 status_code=422,
                 detail="Could not read that Word file. Make sure it is a .docx file (not the older .doc).",
             )
+
     elif name.endswith((".txt", ".md")):
         try:
             pages = [(None, data.decode("utf-8").strip())]
         except UnicodeDecodeError:
             raise HTTPException(422, "Text files must be UTF-8 encoded.")
+
     else:
         raise HTTPException(
             status_code=415,
@@ -134,11 +147,13 @@ def extract_pages(filename: str, data: bytes):
         )
 
     pages = [(number, text) for number, text in pages if text]
+
     if not pages:
         raise HTTPException(
             status_code=422,
             detail="No readable text found in that file. Scanned PDFs (images of text) are not supported.",
         )
+
     return pages
 
 
@@ -149,8 +164,10 @@ def extract_text(filename: str, data: bytes) -> str:
 
 async def read_upload(file: UploadFile) -> bytes:
     data = await file.read(MAX_UPLOAD_BYTES + 1)
+
     if len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="File is too large. The limit is 5 MB.")
+
     return data
 
 
@@ -158,17 +175,21 @@ async def read_upload(file: UploadFile) -> bytes:
 # Searching a document (BM25 keyword scoring)
 # ----------------------------------------------------------------------------
 
+
 STOPWORDS = set(
     "a an and are as at be but by for from has have he her his how i if in into is it its of on or "
     "she that the their them then there these they this to was we were what when where which who why "
     "will with you your do does did can could should would about not no so than too very".split()
 )
+
 SPLIT = re.compile(r"[\s.,;:!?()\[\]{}\"'“”‘’\-–—/\\|*_#<>=+~`^]+")
+
 OVERVIEW = re.compile(
     r"\b(summar\w*|overview|main points?|key points?|key takeaways?|tl;?dr|"
     r"what is this (document|file|paper|pdf|report)|about this)\b",
     re.IGNORECASE,
 )
+
 K1, B = 1.5, 0.75
 
 
@@ -176,6 +197,7 @@ def _stem(word: str) -> str:
     for suffix in ("ing", "ed", "es", "s"):
         if word.endswith(suffix) and len(word) - len(suffix) >= 3:
             return word[: -len(suffix)]
+
     return word
 
 
@@ -188,75 +210,102 @@ def tokenize(text: str) -> List[str]:
 
 
 def chunk_text(text: str, size: int = CHUNK_CHARS) -> List[str]:
-    """Cut text into sections of at most `size` characters, keeping lines together."""
+    """Cut text into sections of at most size characters, keeping lines together."""
     pieces, current = [], ""
+
     for line in text.split("\n"):
         line = line.strip()
+
         if not line:
             continue
-        while len(line) > size:  # one huge line: cut it at a space
+
+        while len(line) > size:
             cut = line.rfind(" ", 0, size)
             cut = cut if cut > size // 2 else size
+
             if current:
                 pieces.append(current)
                 current = ""
+
             pieces.append(line[:cut])
             line = line[cut:].strip()
+
         if current and len(current) + len(line) + 1 > size:
             pieces.append(current)
             current = line
         else:
             current = f"{current}\n{line}" if current else line
+
     if current:
         pieces.append(current)
+
     return pieces
 
 
 class DocIndex:
     def __init__(self, filename: str, pages, owner=None):
         self.filename = filename
-        self.owner = owner  # id of the signed-in user who uploaded it
+        self.owner = owner
         self.created = time.time()
-        self.chunks = []  # {"text": ..., "page": ...}
+        self.chunks = []
+
         for page, text in pages:
             for piece in chunk_text(text):
                 self.chunks.append({"text": piece, "page": page})
+
         self.tokens = [Counter(tokenize(c["text"])) for c in self.chunks]
         self.lengths = [sum(c.values()) for c in self.tokens]
         self.avg_len = (sum(self.lengths) / len(self.lengths)) or 1
+
         self.df = Counter()
+
         for counts in self.tokens:
             self.df.update(counts.keys())
 
     def _spread(self, k: int) -> List[int]:
-        """Sections spread evenly across the whole document (for overview questions)."""
+        """Sections spread evenly across the whole document."""
         n = len(self.chunks)
+
         if n <= k:
             return list(range(n))
+
+        if k <= 1:
+            return [0]
+
         return sorted({round(j * (n - 1) / (k - 1)) for j in range(k)})
 
     def search(self, query: str, k: int = TOP_K) -> List[int]:
         """Indexes of the best matching sections, in reading order."""
         if OVERVIEW.search(query):
             return self._spread(k)
+
         terms = set(tokenize(query))
         n = len(self.chunks)
         scored = []
+
         for i, counts in enumerate(self.tokens):
             score = 0.0
+
             for term in terms:
                 f = counts.get(term, 0)
+
                 if not f:
                     continue
+
                 df = self.df[term]
                 idf = math.log(1 + (n - df + 0.5) / (df + 0.5))
                 norm = f + K1 * (1 - B + B * self.lengths[i] / self.avg_len)
+
                 score += idf * f * (K1 + 1) / norm
+
             if score > 0:
                 scored.append((score, i))
+
         if not scored:
             return self._spread(k)
+
         scored.sort(reverse=True)
+
         return sorted(i for _, i in scored[:k])
 
 
@@ -305,6 +354,11 @@ def load_document(doc_id: str, owner_id: int):
     return DocIndex(row[0], json.loads(row[1]), owner_id)
 
 
+# ----------------------------------------------------------------------------
+# Document conversation models
+# ----------------------------------------------------------------------------
+
+
 class ChatTurn(BaseModel):
     role: Literal["user", "assistant"]
     content: str
@@ -312,7 +366,8 @@ class ChatTurn(BaseModel):
 
 class AskRequest(BaseModel):
     question: str = Field(min_length=1)
-    history: List[ChatTurn] = []
+    history: List[ChatTurn] = Field(default_factory=list)
+    conversation_id: Optional[int] = None
     model: str = Field(default="", max_length=120)
 
 
@@ -324,10 +379,16 @@ DOC_SYSTEM_PROMPT = (
 )
 
 
+# ----------------------------------------------------------------------------
+# Upload document
+# ----------------------------------------------------------------------------
+
+
 @router.post("/docs")
 async def upload_document(request: Request, file: UploadFile = File(...)):
     data = await read_upload(file)
     name = file.filename or "document"
+
     pages = await asyncio.to_thread(extract_pages, name, data)
     index = await asyncio.to_thread(DocIndex, name, pages, getattr(request.state, "user_id", None))
     try:
@@ -335,6 +396,7 @@ async def upload_document(request: Request, file: UploadFile = File(...)):
     except (AuthConfigurationError, *DATABASE_ERRORS):
         raise HTTPException(503, "Document storage is temporarily unavailable.")
     page_numbers = [number for number, _ in pages if number is not None]
+
     return {
         "doc_id": doc_id,
         "filename": name,
@@ -344,34 +406,128 @@ async def upload_document(request: Request, file: UploadFile = File(...)):
     }
 
 
+# ----------------------------------------------------------------------------
+# Ask questions about a document (with database persistence)
+# ----------------------------------------------------------------------------
+
+
 @router.post("/docs/{doc_id}/ask")
 async def ask_document(doc_id: str, request: AskRequest, http: Request):
+    user_id = getattr(http.state, "user_id", None)
     try:
-        index = await asyncio.to_thread(load_document, doc_id, http.state.user_id)
+        index = await asyncio.to_thread(load_document, doc_id, user_id)
     except (AuthConfigurationError, *DATABASE_ERRORS):
         raise HTTPException(503, "Document storage is temporarily unavailable.")
     # Documents belong to the person who uploaded them; others get the same 404.
-    if index is None or index.owner != getattr(http.state, "user_id", None):
+    if index is None or index.owner != user_id:
         raise HTTPException(
             status_code=404,
             detail="This document is no longer available on the server. Please upload it again.",
         )
 
-    # A short follow-up like "and the budget?" is searched together with the previous question.
-    query = request.question
-    if len(request.question.split()) < 6:
-        previous = next((m.content for m in reversed(request.history) if m.role == "user"), "")
-        query = f"{previous} {request.question}"
+    question = request.question.strip()
+
+    if not question:
+        raise HTTPException(422, "Question cannot be blank.")
+
+    # Load the existing conversation or create a new one.
+    try:
+        if request.conversation_id is not None:
+            # Only document conversations belonging to this user are considered.
+            conversations = list_conversations(user_id, "document")
+
+            matching = next(
+                (
+                    conversation
+                    for conversation in conversations
+                    if conversation["id"] == request.conversation_id
+                    and conversation["document_name"] == index.filename
+                ),
+                None,
+            )
+
+            if matching is None:
+                raise HTTPException(404, "Document conversation not found.")
+
+            previous_messages = get_messages(
+                user_id,
+                request.conversation_id,
+            )
+
+            if previous_messages is None:
+                raise HTTPException(404, "Document conversation not found.")
+
+            conversation_id = request.conversation_id
+
+            history = [
+                {
+                    "role": message["role"],
+                    "content": message["content"],
+                }
+                for message in previous_messages
+            ][-MAX_HISTORY:]
+
+        else:
+            # The first question creates a persistent document conversation.
+            conversation_id = create_conversation(
+                user_id=user_id,
+                title=question[:80],
+                conversation_type="document",
+                document_name=index.filename,
+            )
+
+            history = []
+
+        # Save the question before generating the answer.
+        save_message(
+            conversation_id,
+            "user",
+            question,
+        )
+
+    except HTTPException:
+        raise
+    except DATABASE_ERRORS:
+        raise HTTPException(
+            503,
+            "Document conversation storage is unavailable.",
+        )
+
+    # Include the previous question when the current question is a short follow-up.
+    query = question
+
+    if len(question.split()) < 6:
+        previous = next(
+            (
+                message["content"]
+                for message in reversed(history)
+                if message["role"] == "user"
+            ),
+            "",
+        )
+
+        if previous:
+            query = f"{previous} {question}"
 
     hits = index.search(query)
-    excerpts, sources = [], []
+
+    excerpts = []
+    sources = []
+
     for number, i in enumerate(hits, start=1):
         chunk = index.chunks[i]
         where = f" (page {chunk['page']})" if chunk["page"] else ""
-        excerpts.append(f"[{number}]{where}\n{chunk['text']}")
-        sources.append({"n": number, "page": chunk["page"], "snippet": chunk["text"][:200]})
 
-    history = [m.model_dump() for m in request.history][-MAX_HISTORY:]
+        excerpts.append(
+            f"[{number}]{where}\n{chunk['text']}"
+        )
+
+        sources.append({
+            "n": number,
+            "page": chunk["page"],
+            "snippet": chunk["text"][:200],
+        })
+
     messages = [
         {"role": "system", "content": DOC_SYSTEM_PROMPT},
         *history,
@@ -380,7 +536,7 @@ async def ask_document(doc_id: str, request: AskRequest, http: Request):
             "content": (
                 f'Document excerpts from "{index.filename}":\n\n'
                 + "\n\n".join(excerpts)
-                + f"\n\nQuestion: {request.question}"
+                + f"\n\nQuestion: {question}"
             ),
         },
     ]
@@ -392,39 +548,73 @@ async def ask_document(doc_id: str, request: AskRequest, http: Request):
 
     async def pieces():
         finished = False
+        generated_parts = []
+
         try:
             async for line in response.aiter_lines():
                 if not line:
                     continue
+
                 try:
                     text, done = stream_content(line)
                 except (ValueError, KeyError, IndexError):
                     continue
+
                 if text:
+                    generated_parts.append(text)
                     yield text
+
                 if done:
                     finished = True
                     break
-            if not finished:
+
+            if finished:
+                generated_reply = "".join(generated_parts)
+
+                try:
+                    save_message(
+                        conversation_id,
+                        "assistant",
+                        generated_reply,
+                        sources=sources,
+                    )
+                except DATABASE_ERRORS:
+                    yield (
+                        "\n\n[Your response was generated "
+                        "but could not be saved.]"
+                    )
+
+            else:
                 yield "\n\n[The model stream ended unexpectedly.]"
+
         except httpx.HTTPError:
             yield "\n\n[The connection to the model was lost.]"
+
         finally:
             await response.aclose()
             await client.aclose()
 
-    # The sources travel in a header (base64 so any language is safe); the body is the answer text.
-    encoded = base64.b64encode(json.dumps(sources, ensure_ascii=False).encode("utf-8")).decode("ascii")
+    # Sources are sent in a header so any language is safe.
+    encoded = base64.b64encode(
+        json.dumps(sources, ensure_ascii=False).encode("utf-8")
+    ).decode("ascii")
+
     return StreamingResponse(
         pieces(),
         media_type="text/plain; charset=utf-8",
-        headers={"X-Sources": encoded, "Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        headers={
+            "X-Sources": encoded,
+            "X-Conversation-Id": str(conversation_id),
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
 # ----------------------------------------------------------------------------
 # Improving long text
 # ----------------------------------------------------------------------------
+
 
 ImproveTask = Literal["grammar", "formal", "simple", "concise", "reformat"]
 
@@ -438,6 +628,7 @@ class ImproveRequest(BaseModel):
 async def improve_long(text: str, task: str, model: str = "") -> dict:
     """Improve text of any reasonable length, one section at a time."""
     text = text.strip()
+
     if len(text) > MAX_IMPROVE_CHARS:
         raise HTTPException(
             status_code=413,
@@ -447,8 +638,10 @@ async def improve_long(text: str, task: str, model: str = "") -> dict:
                 "Split it into smaller parts."
             ),
         )
+
     chunks = split_text(text, IMPROVE_CHUNK_CHARS)
     improved = []
+
     for chunk in chunks:
         improved.append((await improve_text(chunk, task, model)).strip())
     return {"improved_text": "\n".join(improved), "chunks": len(chunks)}
@@ -456,6 +649,9 @@ async def improve_long(text: str, task: str, model: str = "") -> dict:
 
 @router.post("/improve-text/long")
 async def improve_pasted_text(request: ImproveRequest):
+    if not request.text.strip():
+        raise HTTPException(422, "Text cannot be blank.")
+
     selected = await model_errors(resolve_model(request.model))
     return await model_errors(improve_long(request.text, request.task, selected))
 
@@ -477,6 +673,7 @@ async def improve_file(
 # Export as a Word file
 # ----------------------------------------------------------------------------
 
+
 DOCX_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 BOLD = re.compile(r"(\*\*[^*]+\*\*)")
 
@@ -497,60 +694,89 @@ def _add_runs(paragraph, text: str):
 
 def build_docx(text: str, title: Optional[str]) -> bytes:
     document = Document()
+
     if title:
         document.add_heading(title, level=1)
+
     for raw in text.splitlines():
         line = raw.strip()
+
         if not line:
             continue
+
         heading = re.match(r"^(#{1,3})\s+(.*)", line)
         bullet = re.match(r"^[-*•]\s+(.*)", line)
         numbered = re.match(r"^\d+[.)]\s+(.*)", line)
+
         if heading:
-            document.add_heading(heading.group(2).replace("**", ""), level=len(heading.group(1)) + 1)
+            document.add_heading(
+                heading.group(2).replace("**", ""),
+                level=len(heading.group(1)) + 1,
+            )
         elif bullet:
-            _add_runs(document.add_paragraph(style="List Bullet"), bullet.group(1))
+            _add_runs(
+                document.add_paragraph(style="List Bullet"),
+                bullet.group(1),
+            )
         elif numbered:
-            _add_runs(document.add_paragraph(style="List Number"), numbered.group(1))
+            _add_runs(
+                document.add_paragraph(style="List Number"),
+                numbered.group(1),
+            )
         else:
             _add_runs(document.add_paragraph(), line)
+
     buffer = io.BytesIO()
     document.save(buffer)
+
     return buffer.getvalue()
 
 
 @router.post("/export/docx")
 async def export_docx(request: ExportRequest):
-    content = await asyncio.to_thread(build_docx, request.text, request.title)
+    content = await asyncio.to_thread(
+        build_docx,
+        request.text,
+        request.title,
+    )
+
     return Response(
         content=content,
         media_type=DOCX_TYPE,
-        headers={"Content-Disposition": 'attachment; filename="localmind-document.docx"'},
+        headers={
+            "Content-Disposition": 'attachment; filename="localmind-document.docx"'
+        },
     )
 
 
 # ----------------------------------------------------------------------------
-# Network address (shown in the sidebar so other devices know where to connect)
+# Network address
 # ----------------------------------------------------------------------------
 
 
 def lan_addresses() -> List[str]:
     """IPv4 addresses of this computer on the local network, the main one first."""
     found = []
+
     try:
-        # Connecting a UDP socket sends nothing; it only makes the OS pick the main network interface.
         probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         probe.connect(("10.255.255.255", 1))
         found.append(probe.getsockname()[0])
         probe.close()
     except OSError:
         pass
+
     try:
         for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
             found.append(info[4][0])
     except OSError:
         pass
-    usable = [ip for ip in found if not ip.startswith(("127.", "169.254.", "0."))]
+
+    usable = [
+        ip for ip in found
+        if not ip.startswith(("127.", "169.254.", "0."))
+    ]
+
     return list(dict.fromkeys(usable))
 
 
@@ -559,4 +785,7 @@ async def network(request: Request):
     if os.environ.get("VERCEL"):
         return {"urls": []}
     port = request.url.port or 80
-    return {"urls": [f"http://{ip}:{port}" for ip in lan_addresses()]}
+
+    return {
+        "urls": [f"http://{ip}:{port}" for ip in lan_addresses()]
+    }
