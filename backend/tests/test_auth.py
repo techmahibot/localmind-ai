@@ -95,6 +95,53 @@ class AccountTests(unittest.TestCase):
 
                     self.assertIsNotNone(result)
 
+    def test_user_persists_across_new_connections(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = {
+                "LOCALMIND_DB_PATH": str(Path(directory) / "users.db"),
+                "LOCALMIND_SESSION_SECRET": "test-only-secret"
+            }
+
+            with patch.dict(os.environ, settings, clear=True):
+                user_id, _ = auth.register(
+                    "PersistentUser",
+                    "a-long-password-123"
+                )
+
+                # Open a separate database connection
+                with auth.connection() as (conn, postgres):
+                    self.assertFalse(postgres)
+
+                    saved = conn.execute(
+                        """
+                        SELECT id, username
+                        FROM localmind_users
+                        WHERE username_key = ?
+                        """,
+                        ("persistentuser",)
+                    ).fetchone()
+
+                    self.assertEqual(
+                        saved,
+                        (user_id, "PersistentUser")
+                    )
+
+
+    def test_expired_session_is_rejected(self):
+        with patch.dict(
+            os.environ,
+            {"LOCALMIND_SESSION_SECRET": "test-only-secret"},
+            clear=True
+        ):
+            # Create a session at a fixed time
+            with patch("auth.time.time", return_value=1000):
+                token = auth.create_session(1)
+
+            # Move time beyond the session expiry period
+            expired_time = 1000 + auth.SESSION_SECONDS + 1
+
+            with patch("auth.time.time", return_value=expired_time):
+                self.assertIsNone(auth.session_user_id(token))
 
 if __name__ == "__main__":
     unittest.main()
