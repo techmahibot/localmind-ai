@@ -8,6 +8,7 @@ from unittest.mock import patch
 import httpx
 
 import auth
+import chat_storage
 import documents
 import main
 
@@ -52,6 +53,88 @@ class PostgresAccountTests(unittest.IsolatedAsyncioTestCase):
                 loaded = documents.load_document(document_id, user_id)
                 self.assertEqual(loaded.chunks[0]["text"], pages[0][1])
                 self.assertIsNone(documents.load_document(document_id, user_id + 1))
+
+    async def test_chat_persistence_and_user_isolation(self):
+        username = "Chat" + uuid.uuid4().hex[:12]
+        other_username = "Other" + uuid.uuid4().hex[:12]
+
+        settings = {
+            "DATABASE_URL": os.environ["TEST_POSTGRES_URL"],
+            "LOCALMIND_SESSION_SECRET": "test-only-postgres-session-secret",
+            "VERCEL": "1",
+        }
+
+        with patch.dict(os.environ, settings):
+            user_id, _ = auth.register(
+                username, "a-long-password-123"
+            )
+            other_user_id, _ = auth.register(
+                other_username, "a-long-password-123"
+            )
+
+            conversation_id = chat_storage.create_conversation(
+                user_id,
+                "PostgreSQL chat",
+            )
+
+            chat_storage.save_message(
+                conversation_id,
+                "user",
+                "Does PostgreSQL preserve this message?",
+            )
+
+            sources = [
+                {"n": 1, "page": 2, "snippet": "Test source"}
+            ]
+
+            chat_storage.save_message(
+                conversation_id,
+                "assistant",
+                "Yes, the message was saved.",
+                sources=sources,
+            )
+
+            # Read through fresh database connections.
+            conversations = chat_storage.list_conversations(user_id)
+            self.assertEqual(len(conversations), 1)
+            self.assertEqual(conversations[0]["id"], conversation_id)
+
+            messages = chat_storage.get_messages(
+                user_id, conversation_id
+            )
+            self.assertEqual(len(messages), 2)
+            self.assertEqual(
+                messages[0]["content"],
+                "Does PostgreSQL preserve this message?",
+            )
+            self.assertEqual(messages[1]["sources"], sources)
+
+            # Another user must not see or retrieve this conversation.
+            self.assertEqual(
+                chat_storage.list_conversations(other_user_id), []
+            )
+            self.assertIsNone(
+                chat_storage.get_messages(
+                    other_user_id, conversation_id
+                )
+            )
+
+            # Another user must not be able to delete it either.
+            self.assertFalse(
+                chat_storage.delete_conversation(
+                    other_user_id, conversation_id
+                )
+            )
+
+            # The owner can delete it.
+            self.assertTrue(
+                chat_storage.delete_conversation(
+                    user_id, conversation_id
+                )
+            )
+            self.assertIsNone(
+                chat_storage.get_messages(user_id, conversation_id)
+            )
 
 
 if __name__ == "__main__":
