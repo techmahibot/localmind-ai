@@ -43,6 +43,8 @@ The AI model and backend run on a central host computer. Other devices connected
 - Conversation history
 - Individual sign-up and login with saved user accounts and 12-hour browser sessions
 - Streaming replies, text/file summarization, and grammar/reformatting API
+- General, science/technology, and topic-focused news summaries of supplied text
+- Selection among installed Ollama text-generation models (hosted demo uses its configured model)
 - Document question answering with uploaded PDF, Word, and text files
 - Responsive chatbot interface
 - Multiple LAN client access
@@ -197,9 +199,8 @@ The application should be tested for:
 ## Future Enhancements
 
 - Password reset and account management
-- Multiple model selection
 - Improved conversation management
-- Dedicated science/technology and topic-focused news summary modes
+- Document deletion and storage limits for larger deployments
 - Local chat database
 - Better concurrent-user handling
 
