@@ -678,6 +678,16 @@ button.link {
   border-radius: 8px;
 }
 
+.topic-label {
+  display: block;
+  margin-top: 14px;
+  font-weight: 600;
+}
+
+.topic-label .field {
+  margin-top: 6px;
+}
+
 .hint {
   margin: 12px 0 0;
   color: var(--muted);

@@ -888,7 +888,7 @@ function DocumentsPanel({ username }) {
         signal: controller.signal,
       });
       if (!res.ok) {
-        // The server forgets documents when it restarts.
+        // The document may have been removed after newer uploads.
         if (res.status === 404) setDoc(null);
         throw await errorFromResponse(res);
       }
@@ -1044,6 +1044,8 @@ function SummarizePanel() {
   const [text, setText] = useState("");
   const [file, setFile] = useState(null);
   const [length, setLength] = useState("medium");
+  const [mode, setMode] = useState("general");
+  const [topic, setTopic] = useState("");
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -1066,9 +1068,11 @@ function SummarizePanel() {
         const form = new FormData();
         form.append("file", file);
         form.append("length", length);
+        form.append("mode", mode);
+        if (mode === "news") form.append("topic", topic.trim());
         data = await postForm("/api/summarize/file", form);
       } else {
-        data = await postJson("/api/summarize", { text, length });
+        data = await postJson("/api/summarize", { text, length, mode, topic: mode === "news" ? topic.trim() : "" });
       }
       setResult(data);
     } catch (e) {
@@ -1103,11 +1107,25 @@ function SummarizePanel() {
           disabled={!!file}
         />
         <div className="controls">
+          <select value={mode} onChange={(e) => setMode(e.target.value)} aria-label="Summary type">
+            <option value="general">General</option>
+            <option value="science">Science &amp; technology</option>
+            <option value="news">News &amp; editorials</option>
+          </select>
           <select value={length} onChange={(e) => setLength(e.target.value)} aria-label="Summary length">
             <option value="short">Short (5 bullets)</option>
             <option value="medium">Medium</option>
             <option value="detailed">Detailed</option>
           </select>
+        </div>
+        {mode === "news" && (
+          <label className="topic-label">
+            Topic to focus on (optional)
+            <input className="field" value={topic} maxLength={120}
+              onChange={(e) => setTopic(e.target.value)} placeholder="For example: space research" />
+          </label>
+        )}
+        <div className="controls">
           <button className="btn primary" onClick={run} disabled={loading || (!file && !text.trim())}>
             {loading ? "Summarizing" : "Summarize"}
           </button>

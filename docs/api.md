@@ -33,9 +33,9 @@ Success is `{"reply":"A local network..."}`. `history` is optional; the browser 
 
 ## Summarization
 
-`POST /summarize` accepts `{"text":"Your source text","length":"medium"}`. Length is `short`, `medium`, or `detailed`, defaulting to `medium`.
+`POST /summarize` accepts `{"text":"Your source text","length":"medium","mode":"general","topic":""}`. Length is `short`, `medium`, or `detailed`, defaulting to `medium`. Mode is `general`, `science`, or `news`; the optional topic focuses news/editorial overviews on supplied text.
 
-`POST /summarize/file` accepts `multipart/form-data`: field `file` contains a UTF-8 `.txt`/`.md` or text-based `.pdf`; optional field `length` has the same values. Upload limit: 5 MB. Scanned image-only PDFs need OCR and are currently rejected.
+`POST /summarize/file` accepts `multipart/form-data`: field `file` contains a UTF-8 `.txt`/`.md`, text-based `.pdf`, or `.docx`; optional fields `length`, `mode`, and `topic` use the same values. Upload limit: 5 MB. Scanned image-only PDFs need OCR and are currently rejected. News must be supplied locally; the mode does not fetch headlines.
 
 Both return `{"summary":"...","chunks":1,"truncated":false}`. The file endpoint also returns `filename` and `characters`. When `truncated` is true, only the first eight document chunks were summarized; the UI must show this warning.
 

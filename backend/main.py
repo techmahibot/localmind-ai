@@ -142,6 +142,8 @@ class GrammarRequest(BaseModel):
 class SummarizeRequest(BaseModel):
     text: str = Field(min_length=1)
     length: Literal["short", "medium", "detailed"] = "medium"
+    mode: Literal["general", "science", "news"] = "general"
+    topic: str = Field(default="", max_length=120)
 
 
 async def call_model_errors(coro):
@@ -265,19 +267,23 @@ async def chat_stream(request: ChatRequest):
 async def summarize(request: SummarizeRequest):
     if not request.text.strip():
         raise HTTPException(422, "Text cannot be blank.")
-    return await call_model_errors(summarize_document(request.text, request.length))
+    return await call_model_errors(
+        summarize_document(request.text, request.length, request.mode, request.topic)
+    )
 
 
 @app.post("/api/summarize/file")
 async def summarize_file(
     file: UploadFile = File(...),
     length: Literal["short", "medium", "detailed"] = Form("medium"),
+    mode: Literal["general", "science", "news"] = Form("general"),
+    topic: str = Form("", max_length=120),
 ):
     data = await file.read(MAX_UPLOAD_BYTES + 1)
     if len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="File is too large. The limit is 5 MB.")
     text = extract_text(file.filename or "", data)
-    result = await call_model_errors(summarize_document(text, length))
+    result = await call_model_errors(summarize_document(text, length, mode, topic))
     return {**result, "filename": file.filename, "characters": len(text)}
 
 
