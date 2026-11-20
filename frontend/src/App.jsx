@@ -1,3 +1,4 @@
+
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import "./App.css";
@@ -539,31 +540,142 @@ function Composer({ value, onChange, onSubmit, onStop, loading, placeholder, sub
 
 function ChatPanel({ username }) {
   const begin = useBusy();
-  const [messages, setMessages] = useState(() => loadChat(username));
+
+  const [messages, setMessages] = useState([]);
+  const [conversations, setConversations] = useState([]);
+  const [conversationId, setConversationId] = useState(null);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [loadingHistory, setLoadingHistory] = useState(true);
   const [error, setError] = useState("");
+
   const bottomRef = useRef(null);
   const abortRef = useRef(null);
 
+  // Load the signed-in user's saved conversations from the database.
   useEffect(() => {
-    try {
-      localStorage.setItem(chatKey(username), JSON.stringify(messages));
-    } catch {
-      /* storage unavailable, ignore */
+    let cancelled = false;
+
+    async function loadConversations() {
+      setLoadingHistory(true);
+      setError("");
+
+      try {
+        const res = await fetch("/api/conversations?conversation_type=chat");
+
+        if (!res.ok) throw await errorFromResponse(res);
+
+        const data = await res.json();
+
+        if (cancelled) return;
+
+        const savedConversations = data.conversations || [];
+        setConversations(savedConversations);
+
+        // Restore the most recently updated conversation.
+        if (savedConversations.length > 0) {
+          const latest = savedConversations[0];
+
+          const messageRes = await fetch(
+            `/api/conversations/${latest.id}/messages`
+          );
+
+          if (!messageRes.ok) throw await errorFromResponse(messageRes);
+
+          const messageData = await messageRes.json();
+
+          if (cancelled) return;
+
+          setConversationId(latest.id);
+          setMessages(messageData.messages || []);
+        } else {
+          setConversationId(null);
+          setMessages([]);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setError(e instanceof TypeError ? NETWORK_ERROR : e.message);
+        }
+      } finally {
+        if (!cancelled) setLoadingHistory(false);
+      }
     }
+
+    loadConversations();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [username]);
+
+  useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "auto" });
-  }, [messages, loading, username]);
+  }, [messages, loading]);
+
+  // Refresh the conversation selector after a response has been saved.
+  async function refreshConversations() {
+    try {
+      const res = await fetch("/api/conversations?conversation_type=chat");
+
+      if (!res.ok) throw await errorFromResponse(res);
+
+      const data = await res.json();
+      setConversations(data.conversations || []);
+    } catch (e) {
+      setError(e instanceof TypeError ? NETWORK_ERROR : e.message);
+    }
+  }
+
+  // Start a new conversation. Existing conversations remain saved.
+  function newChat() {
+    if (loading || loadingHistory) return;
+
+    setConversationId(null);
+    setMessages([]);
+    setInput("");
+    setError("");
+  }
+
+  // Retrieve the messages belonging to a selected conversation.
+  async function openConversation(id) {
+    if (loading || loadingHistory || String(id) === String(conversationId)) return;
+
+    setLoadingHistory(true);
+    setError("");
+
+    try {
+      const res = await fetch(`/api/conversations/${id}/messages`);
+
+      if (!res.ok) throw await errorFromResponse(res);
+
+      const data = await res.json();
+
+      setConversationId(Number(id));
+      setMessages(data.messages || []);
+      setInput("");
+    } catch (e) {
+      setError(e instanceof TypeError ? NETWORK_ERROR : e.message);
+    } finally {
+      setLoadingHistory(false);
+    }
+  }
 
   async function send(override) {
     const text = (override ?? input).trim();
-    if (!text || loading) return;
-    const history = messages;
-    // Add the user's message and an empty assistant message that fills up as text streams in.
-    setMessages([...history, { role: "user", content: text }, { role: "assistant", content: "" }]);
+
+    if (!text || loading || loadingHistory) return;
+
+    // Display the new messages immediately while the model generates a response.
+    setMessages((previous) => [
+      ...previous,
+      { role: "user", content: text },
+      { role: "assistant", content: "" },
+    ]);
+
     setInput("");
     setError("");
     setLoading(true);
+
     const done = begin();
 
     const controller = new AbortController();
@@ -573,15 +685,35 @@ function ChatPanel({ username }) {
       const res = await fetch("/api/chat/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text, history }),
+        body: JSON.stringify({
+          message: text,
+          conversation_id: conversationId,
+        }),
         signal: controller.signal,
       });
+
       if (!res.ok) throw await errorFromResponse(res);
-      await readTextStream(res, (reply) =>
-        setMessages((m) => [...m.slice(0, -1), { role: "assistant", content: reply }])
-      );
+
+      // The backend creates a conversation for the first message and
+      // returns its ID in the X-Conversation-Id response header.
+      const savedId = res.headers.get("X-Conversation-Id");
+
+      if (savedId) {
+        setConversationId(Number(savedId));
+      }
+
+      await readTextStream(res, (reply) => {
+        setMessages((previous) => [
+          ...previous.slice(0, -1),
+          { role: "assistant", content: reply },
+        ]);
+      });
+
+      await refreshConversations();
     } catch (e) {
-      if (e.name !== "AbortError") setError(describeStreamError(e));
+      if (e.name !== "AbortError") {
+        setError(describeStreamError(e));
+      }
     } finally {
       setMessages(dropEmptyAssistant);
       setLoading(false);
@@ -592,7 +724,7 @@ function ChatPanel({ username }) {
 
   return (
     <div className="view-inner">
-      <ViewHead title="Chat" subtitle="Talk to the model. Everything stays on this computer.">
+      <ViewHead title="Chat" subtitle="Your conversations are saved to your account.">
         <button
           className="btn ghost small"
           onClick={() => exportChat(messages)}
@@ -601,21 +733,57 @@ function ChatPanel({ username }) {
           <Icon name="download" size={15} />
           Export
         </button>
+
         <button
           className="btn ghost small"
-          onClick={() => {
-            setMessages([]);
-            setError("");
-          }}
-          disabled={messages.length === 0 || loading}
+          onClick={newChat}
+          disabled={loading || loadingHistory}
         >
-          <Icon name="trash" size={15} />
-          Clear
+          <Icon name="pencil" size={15} />
+          New chat
         </button>
       </ViewHead>
+
       <section className="panel">
+        <div className="doc-card">
+          <div>
+            <div className="doc-name">Chat history</div>
+            <div className="doc-meta">
+              {conversations.length} saved conversation
+              {conversations.length === 1 ? "" : "s"}
+            </div>
+          </div>
+
+          <div className="doc-actions">
+            <select
+              value={conversationId ?? ""}
+              onChange={(e) => {
+                if (e.target.value) {
+                  openConversation(Number(e.target.value));
+                }
+              }}
+              disabled={loading || loadingHistory || conversations.length === 0}
+              aria-label="Select a saved conversation"
+            >
+              <option value="">Select a conversation</option>
+
+              {conversations.map((conversation) => (
+                <option key={conversation.id} value={conversation.id}>
+                  {conversation.title}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
         <div className="messages">
-          {messages.length === 0 && (
+          {loadingHistory && (
+            <div className="hero">
+              <p>Loading your conversations...</p>
+            </div>
+          )}
+
+          {!loadingHistory && messages.length === 0 && (
             <div className="hero">
               <h3>Ask anything. Nothing leaves this network.</h3>
               <p>
@@ -631,26 +799,30 @@ function ChatPanel({ username }) {
               </ul>
             </div>
           )}
+
           {messages.map((m, i) => (
             <Message
-              key={i}
+              key={m.id ?? i}
               message={m}
               streaming={loading && i === messages.length - 1 && m.role === "assistant"}
             />
           ))}
+
           <div ref={bottomRef} />
         </div>
+
         {error && (
           <div className="error" role="alert">
             {error}
           </div>
         )}
+
         <Composer
           value={input}
           onChange={setInput}
           onSubmit={() => send()}
           onStop={() => abortRef.current?.abort()}
-          loading={loading}
+          loading={loading || loadingHistory}
           placeholder="Message LocalMind"
           submitLabel="Send"
         />
