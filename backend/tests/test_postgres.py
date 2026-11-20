@@ -8,6 +8,7 @@ from unittest.mock import patch
 import httpx
 
 import auth
+import documents
 import main
 
 
@@ -43,6 +44,14 @@ class PostgresAccountTests(unittest.IsolatedAsyncioTestCase):
                     "username": username.upper(), "password": "another-long-password"
                 })
                 self.assertEqual(duplicate.status_code, 409)
+                user_id = auth.find_user(username)[0]
+                pages = [(1, "The local model works without internet.")]
+                document_id = documents.store_document(
+                    documents.DocIndex("notes.txt", pages, user_id), pages
+                )
+                loaded = documents.load_document(document_id, user_id)
+                self.assertEqual(loaded.chunks[0]["text"], pages[0][1])
+                self.assertIsNone(documents.load_document(document_id, user_id + 1))
 
 
 if __name__ == "__main__":

@@ -63,7 +63,7 @@ The tests mock model replies and use temporary local account storage. Demonstrat
 
 All routes below need a signed-in session.
 
-- `POST /api/docs` (multipart `file`: `.pdf`, `.docx`, `.txt`, `.md`, up to 5 MB) reads a file and returns `doc_id`, `filename`, `sections`, `pages`. The document is kept in server memory for the person who uploaded it.
+- `POST /api/docs` (multipart `file`: `.pdf`, `.docx`, `.txt`, `.md`, up to 5 MB) reads a file and returns `doc_id`, `filename`, `sections`, `pages`. The extracted text is stored in SQLite locally or PostgreSQL on the hosted deployment, scoped to the uploader. Each account keeps its most recent 30 documents.
 - `POST /api/docs/{doc_id}/ask` with `{"question": "...", "history": [...]}` streams the answer as plain text. The passages used are sent in the `X-Sources` header (base64-encoded JSON). Another user's document returns 404.
 - `POST /api/improve-text/long` with `{"text": "...", "task": "grammar|formal|simple|concise|reformat"}` improves text up to 15,000 characters section by section. `POST /api/improve-text/file` does the same for an uploaded file.
 - `POST /api/export/docx` with `{"text": "..."}` returns a Word file.

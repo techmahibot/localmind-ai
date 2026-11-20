@@ -8,6 +8,7 @@ from unittest.mock import patch
 import httpx
 from docx import Document
 
+import auth
 import documents
 import main
 
@@ -55,6 +56,10 @@ class DocumentTests(unittest.IsolatedAsyncioTestCase):
         upload = await owner.post("/api/docs", files={"file": ("notes.docx", make_docx("The library closes at 8 pm."))})
         self.assertEqual(upload.status_code, 200)
         doc_id = upload.json()["doc_id"]
+        # The document is reloaded from the database on each question.
+        saved = documents.load_document(doc_id, auth.find_user("Owner")[0])
+        self.assertIsNotNone(saved)
+        self.assertIn("library closes", saved.chunks[0]["text"])
         # Another signed-in user cannot ask about someone else's document.
         denied = await other.post(f"/api/docs/{doc_id}/ask", json={"question": "When does it close?"})
         self.assertEqual(denied.status_code, 404)

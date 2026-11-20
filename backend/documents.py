@@ -29,6 +29,7 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 from pypdf import PdfReader
 
+from auth import AuthConfigurationError, DATABASE_ERRORS, connection
 from grammer import improve_text
 from llm import ModelConfigurationError, ModelResponseError, open_stream, stream_content
 from summarizer import split_text
@@ -38,7 +39,7 @@ NUM_CTX = 4096
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB
 CHUNK_CHARS = 900  # size of one searchable section of a document
 TOP_K = 4  # how many sections are sent to the model with each question
-MAX_DOCS = 30  # documents kept in memory; the oldest is dropped beyond this
+MAX_DOCS = 30  # documents kept per account; older documents are pruned
 MAX_HISTORY = 6  # earlier chat messages sent along for follow-up questions
 
 IMPROVE_CHUNK_CHARS = 2500
@@ -258,16 +259,49 @@ class DocIndex:
         return sorted(i for _, i in scored[:k])
 
 
-DOCS = {}
+def ensure_documents_table(conn):
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS localmind_documents ("
+        "id TEXT PRIMARY KEY, owner_id BIGINT NOT NULL, filename TEXT NOT NULL, "
+        "pages_json TEXT NOT NULL, created_at DOUBLE PRECISION NOT NULL)"
+    )
 
 
-def store_document(index: DocIndex) -> str:
-    while len(DOCS) >= MAX_DOCS:
-        oldest = min(DOCS, key=lambda d: DOCS[d].created)
-        del DOCS[oldest]
-    doc_id = uuid.uuid4().hex[:12]
-    DOCS[doc_id] = index
+def store_document(index: DocIndex, pages) -> str:
+    serialized = json.dumps(pages, ensure_ascii=False)
+    if len(serialized.encode("utf-8")) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "The extracted text is too large. The limit is 5 MB.")
+    doc_id = uuid.uuid4().hex
+    with connection() as (conn, postgres):
+        ensure_documents_table(conn)
+        marker = "%s" if postgres else "?"
+        conn.execute(
+            f"INSERT INTO localmind_documents (id, owner_id, filename, pages_json, created_at) "
+            f"VALUES ({', '.join([marker] * 5)})",
+            (doc_id, index.owner, index.filename, serialized, time.time()),
+        )
+        rows = conn.execute(
+            f"SELECT id FROM localmind_documents WHERE owner_id = {marker} "
+            "ORDER BY created_at DESC, id DESC",
+            (index.owner,),
+        ).fetchall()
+        for (old_id,) in rows[MAX_DOCS:]:
+            conn.execute(f"DELETE FROM localmind_documents WHERE id = {marker}", (old_id,))
     return doc_id
+
+
+def load_document(doc_id: str, owner_id: int):
+    with connection() as (conn, postgres):
+        ensure_documents_table(conn)
+        marker = "%s" if postgres else "?"
+        row = conn.execute(
+            f"SELECT filename, pages_json FROM localmind_documents "
+            f"WHERE id = {marker} AND owner_id = {marker}",
+            (doc_id, owner_id),
+        ).fetchone()
+    if row is None:
+        return None
+    return DocIndex(row[0], json.loads(row[1]), owner_id)
 
 
 class ChatTurn(BaseModel):
@@ -294,7 +328,10 @@ async def upload_document(request: Request, file: UploadFile = File(...)):
     name = file.filename or "document"
     pages = await asyncio.to_thread(extract_pages, name, data)
     index = await asyncio.to_thread(DocIndex, name, pages, getattr(request.state, "user_id", None))
-    doc_id = store_document(index)
+    try:
+        doc_id = await asyncio.to_thread(store_document, index, pages)
+    except (AuthConfigurationError, *DATABASE_ERRORS):
+        raise HTTPException(503, "Document storage is temporarily unavailable.")
     page_numbers = [number for number, _ in pages if number is not None]
     return {
         "doc_id": doc_id,
@@ -307,7 +344,10 @@ async def upload_document(request: Request, file: UploadFile = File(...)):
 
 @router.post("/docs/{doc_id}/ask")
 async def ask_document(doc_id: str, request: AskRequest, http: Request):
-    index = DOCS.get(doc_id)
+    try:
+        index = await asyncio.to_thread(load_document, doc_id, http.state.user_id)
+    except (AuthConfigurationError, *DATABASE_ERRORS):
+        raise HTTPException(503, "Document storage is temporarily unavailable.")
     # Documents belong to the person who uploaded them; others get the same 404.
     if index is None or index.owner != getattr(http.state, "user_id", None):
         raise HTTPException(
