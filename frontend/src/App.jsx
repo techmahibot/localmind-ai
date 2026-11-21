@@ -234,6 +234,13 @@ const ICONS = {
       <path d="M13 7l4 4" />
     </>
   ),
+  plus: <path d="M12 5v14M5 12h14" />,
+  info: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 11v5M12 7.8h.01" />
+    </>
+  ),
   send: <path d="M12 19V5M6 11l6-6 6 6" />,
   stop: <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none" />,
   trash: <path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6" />,
@@ -675,11 +682,10 @@ function Composer({ value, onChange, onSubmit, onStop, loading, placeholder, sub
 // Chat
 // ---------------------------------------------------------------------------
 
-function ChatPanel({ username, deployment, model }) {
+function ChatPanel({ username, deployment, model, conversations, setConversations, setActiveChat, chatCommand }) {
   const begin = useBusy();
 
   const [messages, setMessages] = useState([]);
-  const [conversations, setConversations] = useState([]);
   const [conversationId, setConversationId] = useState(null);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -746,7 +752,22 @@ function ChatPanel({ username, deployment, model }) {
     };
   }, [username]);
 
-  // Refresh the conversation selector after a response has been saved.
+  // Tell the sidebar which chat is open.
+  useEffect(() => {
+    setActiveChat(conversationId);
+  }, [conversationId, setActiveChat]);
+
+  // The sidebar asks this panel to open a saved chat or start a new one.
+  const handledCommand = useRef(null);
+  useEffect(() => {
+    if (!chatCommand || handledCommand.current === chatCommand) return;
+    handledCommand.current = chatCommand;
+    if (chatCommand.kind === "new") newChat();
+    else openConversation(chatCommand.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatCommand]);
+
+  // Refresh the saved chats in the sidebar after a response has been saved.
   async function refreshConversations() {
     try {
       const res = await fetch("/api/conversations?conversation_type=chat");
@@ -889,7 +910,7 @@ function ChatPanel({ username, deployment, model }) {
       </ViewHead>
 
       <section className="panel">
-        <div className="doc-card">
+        <div className="doc-card history-mobile">
           <div>
             <div className="doc-name">Chat history</div>
             <div className="doc-meta">
@@ -1488,11 +1509,171 @@ function ImprovePanel({ model }) {
 // App shell
 // ---------------------------------------------------------------------------
 
+function groupChats(conversations) {
+  const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const today = startOfDay(new Date());
+  const groups = { Today: [], Yesterday: [], Earlier: [] };
+  for (const c of conversations) {
+    const when = new Date(c.updated_at);
+    const day = Number.isNaN(when.getTime()) ? 0 : startOfDay(when);
+    if (day === today) groups.Today.push(c);
+    else if (day === today - 86400000) groups.Yesterday.push(c);
+    else groups.Earlier.push(c);
+  }
+  return Object.entries(groups).filter(([, list]) => list.length > 0);
+}
+
+// The list of saved chats in the sidebar.
+function ChatList({ conversations, activeId, onChatTab, disabled, error, onOpen, onNew, onDelete }) {
+  const [confirming, setConfirming] = useState(null);
+
+  useEffect(() => {
+    if (confirming === null) return;
+    const timer = setTimeout(() => setConfirming(null), 3000);
+    return () => clearTimeout(timer);
+  }, [confirming]);
+
+  return (
+    <section className="chats" aria-label="Your chats">
+      <div className="chats-head">
+        <h2>Your chats</h2>
+        <button className="chats-new" onClick={onNew} disabled={disabled} aria-label="Start a new chat">
+          <Icon name="plus" size={15} />
+          New
+        </button>
+      </div>
+      {error && (
+        <p className="chats-error" role="alert">
+          {error}
+        </p>
+      )}
+      {conversations.length === 0 ? (
+        <p className="chats-empty">Your chats will show up here.</p>
+      ) : (
+        <div className="chats-scroll">
+          {groupChats(conversations).map(([label, list]) => (
+            <div key={label} className="chat-group">
+              <h3>{label}</h3>
+              <ul>
+                {list.map((c) => (
+                  <li key={c.id} className={onChatTab && c.id === activeId ? "on" : ""}>
+                    <button
+                      className="chat-item"
+                      onClick={() => onOpen(c.id)}
+                      disabled={disabled}
+                      title={c.title}
+                      aria-current={onChatTab && c.id === activeId ? "true" : undefined}
+                    >
+                      {c.title}
+                    </button>
+                    <button
+                      className={`chat-del${confirming === c.id ? " sure" : ""}`}
+                      disabled={disabled}
+                      aria-label={confirming === c.id ? `Confirm deleting ${c.title}` : `Delete ${c.title}`}
+                      onClick={() => {
+                        if (confirming === c.id) {
+                          setConfirming(null);
+                          onDelete(c.id);
+                        } else {
+                          setConfirming(c.id);
+                        }
+                      }}
+                    >
+                      {confirming === c.id ? "Delete?" : <Icon name="trash" size={14} />}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+const FEATURES = [
+  { tab: "chat", icon: "chat", title: "Chat", text: "Ask the model anything. Replies stream in word by word, and every chat is saved to your account." },
+  { tab: "documents", icon: "doc", title: "Documents", text: "Upload a PDF or Word file and ask questions. Each answer shows the pages it came from." },
+  { tab: "summarize", icon: "list", title: "Summarize", text: "Turn long text or a whole file into a short summary, in sections if it is very long." },
+  { tab: "improve", icon: "pencil", title: "Improve text", text: "Fix grammar, change the tone, or tidy the structure, then compare with the original and download as Word." },
+];
+
+const STACK = ["React and Vite", "FastAPI (Python)", "Ollama", "SQLite or PostgreSQL", "pypdf and python-docx"];
+
+function ProjectPanel({ deployment, activeModel, goTo }) {
+  const mode =
+    deployment === "hosted"
+      ? "an online demo that sends requests to a hosted model over the internet"
+      : deployment === "local"
+        ? "the offline setup, where the model runs on this network"
+        : "starting up";
+  return (
+    <div className="view-inner">
+      <ViewHead title="How it works" subtitle="What LocalMind AI is, and how a message travels through it." />
+      <section className="panel scroll about">
+        <p className="about-lead">
+          LocalMind AI is a private chatbot that runs on one computer and is used by everyone on the same Wi-Fi. The AI model
+          lives on that computer, so your questions, files and answers never have to go to the internet.
+        </p>
+
+        <h3>The journey of a message</h3>
+        <ol className="flow" aria-label="How a message travels">
+          <li>
+            <strong>Your browser</strong>
+            <span>The React app you are looking at. It sends your message and shows the reply as it arrives.</span>
+          </li>
+          <li>
+            <strong>The server</strong>
+            <span>A FastAPI program that checks you are signed in, reads your files and saves your chats.</span>
+          </li>
+          <li>
+            <strong>The model</strong>
+            <span>Ollama runs the AI model{activeModel ? ` (${activeModel})` : ""} and streams its answer back the same way.</span>
+          </li>
+        </ol>
+
+        <h3>What you can do here</h3>
+        <div className="feature-grid">
+          {FEATURES.map((f) => (
+            <button key={f.tab} className="feature" onClick={() => goTo(f.tab)}>
+              <Icon name={f.icon} size={22} />
+              <strong>{f.title}</strong>
+              <span>{f.text}</span>
+            </button>
+          ))}
+        </div>
+
+        <h3>How a document gets answered</h3>
+        <p>
+          Your file is split into small sections. When you ask a question, a keyword search finds the few sections that match
+          best, and only those are sent to the model along with your question. That is why answers can show their sources,
+          and why a small model can handle a long file.
+        </p>
+
+        <h3>Privacy</h3>
+        <p>
+          Passwords are salted and hashed, and chats are saved to the database on the host computer, tied to your account.
+          This copy is running as {mode}.
+        </p>
+
+        <h3>Built with</h3>
+        <ul className="stack">
+          {STACK.map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ul>
+      </section>
+    </div>
+  );
+}
+
 const TABS = [
   { id: "chat", label: "Chat", icon: "chat", Panel: ChatPanel },
   { id: "documents", label: "Documents", icon: "doc", Panel: DocumentsPanel },
   { id: "summarize", label: "Summarize", icon: "list", Panel: SummarizePanel },
   { id: "improve", label: "Improve text", icon: "pencil", Panel: ImprovePanel },
+  { id: "project", label: "Project", icon: "info", Panel: ProjectPanel },
 ];
 
 function AuthPage({ onLogin, notice }) {
@@ -1702,6 +1883,32 @@ function Workspace({ username, onLogout }) {
   const [models, setModels] = useState([]);
   const [model, setModel] = useState("");
   const [busyCount, setBusyCount] = useState(0);
+  const [conversations, setConversations] = useState([]);
+  const [activeChat, setActiveChat] = useState(null);
+  const [chatCommand, setChatCommand] = useState(null);
+  const [chatError, setChatError] = useState("");
+
+  function openChat(id) {
+    setTab("chat");
+    setChatCommand({ kind: "open", id });
+  }
+
+  function newChat() {
+    setTab("chat");
+    setChatCommand({ kind: "new" });
+  }
+
+  async function deleteChat(id) {
+    setChatError("");
+    try {
+      const res = await fetch(`/api/conversations/${id}`, { method: "DELETE" });
+      if (!res.ok) throw await errorFromResponse(res);
+      setConversations((list) => list.filter((c) => c.id !== id));
+      if (id === activeChat) setChatCommand({ kind: "new" });
+    } catch (e) {
+      setChatError(e instanceof TypeError ? NETWORK_ERROR : e.message);
+    }
+  }
 
   useEffect(() => {
     let active = true;
@@ -1762,6 +1969,16 @@ function Workspace({ username, onLogout }) {
               </button>
             ))}
           </nav>
+          <ChatList
+            conversations={conversations}
+            activeId={activeChat}
+            onChatTab={tab === "chat"}
+            disabled={busyCount > 0}
+            error={chatError}
+            onOpen={openChat}
+            onNew={newChat}
+            onDelete={deleteChat}
+          />
           <div className="sidebar-foot">
             <NetworkCard deployment={health.deployment} />
             <Account username={username} onLogout={onLogout} />
@@ -1780,7 +1997,17 @@ function Workspace({ username, onLogout }) {
           {/* All panels stay mounted so switching tabs keeps your work. */}
           {TABS.map(({ id, Panel }) => (
             <div key={id} className={`view${tab === id ? " active" : ""}`}>
-              <Panel username={username} deployment={health.deployment} model={model} />
+              <Panel
+                username={username}
+                deployment={health.deployment}
+                model={model}
+                activeModel={model || health.model}
+                conversations={conversations}
+                setConversations={setConversations}
+                setActiveChat={setActiveChat}
+                chatCommand={chatCommand}
+                goTo={setTab}
+              />
             </div>
           ))}
         </main>

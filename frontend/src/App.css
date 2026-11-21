@@ -1737,3 +1737,291 @@ body {
   .nav button { border-radius: 18px; }
   .nav button span { white-space: nowrap; font-size: 0.74rem; }
 }
+
+/* =====================================================================
+   Sidebar chat list and the project (How it works) page
+   ===================================================================== */
+.chats {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1 1 160px;
+  min-height: 140px;
+}
+.chats-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 6px;
+}
+.chats-head h2 {
+  margin: 0;
+  font-family: var(--display);
+  font-style: italic;
+  font-weight: 600;
+  font-size: 1.05rem;
+  color: var(--cherry-deep);
+}
+.chats-new {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px 4px 8px;
+  border: 1.5px solid var(--line-strong);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--cherry-deep);
+  font-weight: 600;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+.chats-new:hover:not(:disabled) {
+  background: var(--hover);
+}
+.chats-new:disabled,
+.chat-item:disabled,
+.chat-del:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.chats-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+.chat-group h3 {
+  margin: 10px 8px 4px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+.chat-group ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.chat-group li {
+  display: flex;
+  align-items: center;
+  border-radius: 12px;
+}
+.chat-group li:hover {
+  background: rgba(255, 255, 255, 0.7);
+}
+.chat-group li.on {
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(179, 32, 63, 0.12);
+}
+.chat-item {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 12px;
+  background: none;
+  color: var(--text);
+  font-size: 0.9rem;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.chat-group li.on .chat-item {
+  font-weight: 600;
+  color: var(--cherry-deep);
+}
+.chat-del {
+  flex: none;
+  margin-right: 4px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0;
+}
+.chat-group li:hover .chat-del,
+.chat-group li.on .chat-del,
+.chat-del:focus-visible,
+.chat-del.sure {
+  opacity: 1;
+}
+.chat-del:hover {
+  color: var(--cherry);
+}
+.chat-del.sure {
+  padding: 4px 10px;
+  background: var(--cherry);
+  color: #fff;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+.chats-empty {
+  margin: 0;
+  padding: 8px;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+.chats-error {
+  margin: 0;
+  padding: 0 8px;
+  color: var(--danger-text);
+  font-size: 0.85rem;
+}
+
+/* The old dropdown stays for narrow screens, where the sidebar list is hidden */
+.history-mobile {
+  display: none;
+}
+@media (max-width: 1000px) {
+  .chats {
+    display: none;
+  }
+  .history-mobile {
+    display: flex;
+  }
+}
+
+/* Project page */
+.about {
+  padding: 4px 2px 28px;
+}
+.about h3 {
+  margin: 28px 0 8px;
+  font-family: var(--display);
+  font-style: italic;
+  font-weight: 600;
+  font-size: 1.3rem;
+  color: var(--cherry-deep);
+}
+.about p {
+  max-width: 62ch;
+  margin: 0 0 8px;
+}
+.about-lead {
+  margin-top: 16px;
+  font-size: 1.08rem;
+}
+.flow {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 30px;
+  margin: 14px 0 0;
+  padding: 0;
+}
+.flow li {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px;
+  border: 1.5px solid var(--line-strong);
+  border-radius: 20px;
+  background: #fff;
+}
+.flow li strong {
+  font-family: var(--display);
+  font-style: italic;
+  font-size: 1.1rem;
+  color: var(--cherry-deep);
+}
+.flow li span {
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+.flow li:not(:last-child)::after {
+  content: "→";
+  position: absolute;
+  top: 50%;
+  right: -26px;
+  width: 22px;
+  transform: translateY(-50%);
+  text-align: center;
+  color: var(--cherry);
+  font-size: 1.4rem;
+}
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+.feature {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 14px 16px;
+  border: 1.5px solid var(--line);
+  border-radius: 18px;
+  background: #fff;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s, transform 0.15s;
+}
+.feature svg {
+  color: var(--cherry);
+}
+.feature span {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.feature:hover {
+  border-color: var(--cherry);
+  transform: translateY(-1px);
+}
+.stack {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+}
+.stack li {
+  padding: 5px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--side);
+  color: var(--cherry-deep);
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+@media (max-width: 760px) {
+  .flow {
+    grid-template-columns: 1fr;
+    gap: 26px;
+  }
+  .flow li:not(:last-child)::after {
+    content: "↓";
+    top: auto;
+    bottom: -26px;
+    right: auto;
+    left: 50%;
+    transform: translateX(-50%);
+  }
+  .feature-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Five bottom tabs on a phone: share the width evenly */
+@media (max-width: 760px) {
+  .nav { gap: 0; }
+  .nav button { flex: 1; min-width: 0; padding: 8px 2px; }
+}
+
+.history-mobile select {
+  max-width: 100%;
+  padding: 7px 14px;
+  border: 1.5px solid var(--line-strong);
+  border-radius: 999px;
+  background: #fff;
+}
